@@ -1,0 +1,1993 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>NutriGap — Nutrient Gap Guide</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root{
+    --paper:#F1F4EC;
+    --panel:#FFFFFF;
+    --ink:#1C2420;
+    --ink-soft:#57614F;
+    --ink-faint:#8B9484;
+    --line:#D8DECF;
+    --line-soft:#E7EBE0;
+    --teal:#2B6E5A;
+    --teal-deep:#1D4E40;
+    --teal-wash:#E4EFE9;
+    --rust:#B0501F;
+    --rust-wash:#F6E7DB;
+    --steel:#3E6E93;
+    --steel-wash:#E3ECF2;
+    --radius-s:4px;
+    --radius-m:10px;
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--paper);
+    color:var(--ink);
+    font-family:'IBM Plex Sans', sans-serif;
+    font-size:15px;
+    line-height:1.5;
+  }
+  h1,h2,h3,.display{
+    font-family:'Fraunces', serif;
+    font-weight:600;
+    color:var(--ink);
+    letter-spacing:-0.01em;
+  }
+  .num{ font-family:'IBM Plex Mono', monospace; font-weight:500; }
+  button{ font-family:inherit; }
+  a{ color:var(--teal-deep); }
+
+  /* ---- Shell layout ---- */
+  .shell{
+    display:grid;
+    grid-template-columns:232px 1fr;
+    min-height:100vh;
+  }
+  .brand{
+    padding:26px 24px 22px;
+    border-bottom:1px solid var(--line);
+  }
+  .brand .mark{
+    font-family:'Fraunces', serif;
+    font-size:22px;
+    font-weight:700;
+    color:var(--teal-deep);
+    line-height:1;
+  }
+  .brand .tag{
+    margin-top:6px;
+    font-size:12.5px;
+    color:var(--ink-soft);
+    max-width:22ch;
+  }
+  .sidebar{
+    background:var(--panel);
+    border-right:1px solid var(--line);
+    position:sticky;
+    top:0;
+    height:100vh;
+    overflow-y:auto;
+  }
+  .nav{ padding:14px 12px; }
+  .nav-item{
+    display:flex;
+    align-items:baseline;
+    gap:10px;
+    width:100%;
+    text-align:left;
+    padding:11px 12px;
+    border:none;
+    background:none;
+    cursor:pointer;
+    border-radius:var(--radius-s);
+    color:var(--ink-soft);
+    font-size:14.5px;
+    margin-bottom:2px;
+  }
+  .nav-item .n{
+    font-family:'IBM Plex Mono', monospace;
+    font-size:11px;
+    color:var(--ink-faint);
+    width:14px;
+  }
+  .nav-item:hover{ background:var(--line-soft); color:var(--ink); }
+  .nav-item.active{
+    background:var(--teal-wash);
+    color:var(--teal-deep);
+    font-weight:500;
+  }
+  .nav-item.active .n{ color:var(--teal-deep); }
+
+  .main{ padding:36px 44px 80px; max-width:980px; }
+  .panel{ display:none; }
+  .panel.active{ display:block; animation:rise .35s ease; }
+  @keyframes rise{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
+
+  .page-head{ margin-bottom:28px; }
+  .page-head h1{ font-size:28px; margin:0 0 6px; }
+  .page-head p{ color:var(--ink-soft); margin:0; max-width:62ch; font-size:14.5px; }
+
+  .grid-2{ display:grid; grid-template-columns:1.1fr 0.9fr; gap:28px; align-items:start; }
+  @media (max-width: 880px){ .grid-2{ grid-template-columns:1fr; } .shell{ grid-template-columns:1fr; } .sidebar{ position:relative; height:auto; } }
+
+  .card{
+    background:var(--panel);
+    border:1px solid var(--line);
+    border-radius:var(--radius-m);
+    padding:24px;
+  }
+  .card + .card{ margin-top:20px; }
+
+  .field-row{ display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+  .field{ margin-bottom:16px; }
+  .field label{
+    display:block;
+    font-size:12.5px;
+    color:var(--ink-soft);
+    margin-bottom:6px;
+  }
+  .field input, .field select{
+    width:100%;
+    padding:9px 11px;
+    border:1px solid var(--line);
+    border-radius:var(--radius-s);
+    font-size:14.5px;
+    background:#fff;
+    color:var(--ink);
+    font-family:inherit;
+  }
+  .field input:focus, .field select:focus, button:focus-visible{
+    outline:2px solid var(--teal);
+    outline-offset:1px;
+  }
+  .segmented{ display:flex; flex-wrap:wrap; gap:6px; }
+  .segmented button{
+    padding:8px 13px;
+    border:1px solid var(--line);
+    background:#fff;
+    border-radius:20px;
+    font-size:13.5px;
+    cursor:pointer;
+    color:var(--ink-soft);
+  }
+  .segmented button.sel{
+    background:var(--teal);
+    border-color:var(--teal);
+    color:#fff;
+  }
+
+  .btn{
+    display:inline-flex;
+    align-items:center;
+    gap:8px;
+    padding:10px 18px;
+    background:var(--teal);
+    color:#fff;
+    border:none;
+    border-radius:var(--radius-s);
+    font-size:14px;
+    font-weight:500;
+    cursor:pointer;
+  }
+  .btn:hover{ background:var(--teal-deep); }
+  .btn.ghost{
+    background:#fff;
+    color:var(--ink);
+    border:1px solid var(--line);
+  }
+  .btn.ghost:hover{ border-color:var(--ink-faint); }
+  .btn.small{ padding:6px 12px; font-size:13px; }
+
+  .target-card{
+    background:var(--teal-deep);
+    color:#fff;
+    border-radius:var(--radius-m);
+    padding:26px 24px;
+  }
+  .target-card .kcal{ font-family:'Fraunces', serif; font-size:46px; font-weight:600; line-height:1; }
+  .target-card .kcal-label{ font-size:13px; opacity:.8; margin-top:4px; }
+  .target-row{
+    display:flex; justify-content:space-between;
+    padding:10px 0 2px; border-top:1px solid rgba(255,255,255,.16);
+    font-size:14px;
+  }
+  .target-row .v{ font-family:'IBM Plex Mono', monospace; }
+  .target-sub{
+    font-size:11.5px;
+    color:rgba(255,255,255,.72);
+    line-height:1.45;
+    padding-bottom:10px;
+  }
+  .outcome-stats{ display:grid; grid-template-columns:repeat(3,1fr); gap:10px; margin:12px 0 14px; }
+  .outcome-stat{ background:var(--teal-wash); border-radius:var(--radius-s); padding:12px 8px; text-align:center; }
+  .outcome-stat .v{ font-family:'Fraunces', serif; font-size:16.5px; color:var(--teal-deep); }
+  .outcome-stat .l{ font-size:11.5px; color:var(--ink-soft); margin-top:3px; }
+  .outcome-note{ font-size:13px; color:var(--ink-soft); margin:0; line-height:1.55; }
+
+  .note{
+    font-size:13px; color:var(--ink-soft);
+    background:var(--line-soft);
+    border-left:3px solid var(--ink-faint);
+    padding:11px 14px;
+    border-radius:0 var(--radius-s) var(--radius-s) 0;
+    margin-top:14px;
+  }
+  .disclaimer{
+    font-size:13px;
+    background:var(--steel-wash);
+    border-left:3px solid var(--steel);
+    color:#233b4d;
+    padding:12px 15px;
+    border-radius:0 var(--radius-s) var(--radius-s) 0;
+    margin-bottom:20px;
+  }
+  .disclaimer.warn{
+    background:var(--rust-wash);
+    border-left-color:var(--rust);
+    color:#5c2c0d;
+  }
+  .disclaimer strong{ display:block; margin-bottom:2px; }
+
+  /* Diet log */
+  .add-row{ display:grid; grid-template-columns:2fr 90px auto; gap:10px; align-items:end; }
+  table.log{ width:100%; border-collapse:collapse; margin-top:18px; font-size:13.5px; }
+  table.log th{
+    text-align:left; font-weight:500; color:var(--ink-soft);
+    font-size:12px; padding:8px 10px; border-bottom:1px solid var(--line);
+  }
+  table.log td{ padding:9px 10px; border-bottom:1px solid var(--line-soft); }
+  table.log tr:last-child td{ border-bottom:none; }
+  .rm{ background:none; border:none; color:var(--ink-faint); cursor:pointer; font-size:16px; line-height:1; }
+  .rm:hover{ color:var(--rust); }
+  .empty{ color:var(--ink-faint); font-style:italic; padding:18px 0; font-size:14px; }
+
+  .meal-badge{ font-size:11px; padding:2px 9px; border-radius:20px; white-space:nowrap; }
+  .meal-breakfast{ background:var(--steel-wash); color:#234a63; }
+  .meal-lunch{ background:var(--teal-wash); color:var(--teal-deep); }
+  .meal-dinner{ background:#EEE6F2; color:#5A3D68; }
+  .meal-snack{ background:#F4EBD3; color:#7A5A12; }
+  tr.meal-head td{
+    padding:14px 10px 6px; border-bottom:1px solid var(--line);
+    font-size:11.5px; text-transform:none; color:var(--ink-soft); font-weight:500;
+  }
+  tr.meal-head:first-child td{ padding-top:2px; }
+  tr.meal-total td{ font-weight:500; color:var(--ink-soft); border-bottom:1px solid var(--line); }
+  tr.grand-total td{ font-weight:600; border-top:2px solid var(--ink); border-bottom:none; padding-top:12px; }
+
+  #micBtn.recording{ border-color:var(--rust); color:var(--rust); background:var(--rust-wash); }
+  .parse-item{ display:flex; align-items:center; gap:12px; padding:9px 0; border-bottom:1px solid var(--line-soft); font-size:14px; }
+  .parse-item:last-child{ border-bottom:none; }
+  .parse-item input[type=checkbox]{ width:16px; height:16px; accent-color:var(--teal); flex-shrink:0; }
+  .parse-item .pname{ flex:1; }
+  .parse-item .pqty{ width:56px; padding:5px 7px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:inherit; }
+  .parse-item.nomatch .pname{ color:var(--rust); }
+  .parse-item .praw{ font-size:12px; color:var(--ink-faint); display:block; }
+
+  /* Gap bars */
+  .gap-row{ margin-bottom:18px; }
+  .gap-row .heads{ display:flex; justify-content:space-between; align-items:flex-start; font-size:13.5px; margin-bottom:6px; gap:14px; }
+  .gap-row .heads .label{ font-weight:500; display:block; }
+  .gap-row .heads .benefit{ display:block; font-size:11.5px; font-weight:400; color:var(--ink-faint); line-height:1.4; margin-top:2px; max-width:52ch; }
+  .gap-row .heads .delta{ font-family:'IBM Plex Mono', monospace; font-size:13px; white-space:nowrap; padding-top:1px; }
+  .delta.short{ color:var(--rust); }
+  .delta.over{ color:var(--steel); }
+  .delta.met{ color:var(--teal-deep); }
+  .track{ height:9px; background:var(--line-soft); border-radius:5px; overflow:hidden; position:relative; }
+  .fill{ height:100%; border-radius:5px; background:var(--teal); }
+  .fill.short{ background:var(--rust); }
+  .fill.over{ background:var(--steel); }
+
+  .insight-card{
+    border:1px solid var(--line);
+    border-radius:var(--radius-m);
+    padding:22px 24px;
+    background:linear-gradient(180deg, #fff, var(--teal-wash) 340%);
+  }
+  .insight-card h3{ font-size:17px; margin:0 0 12px; }
+  .insight-card p{ font-size:14.5px; color:var(--ink); margin:0 0 12px; }
+  .meal-sugg{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
+  .meal-sugg .item{
+    border:1px solid var(--line); border-radius:var(--radius-s);
+    padding:12px 14px; background:#fff;
+  }
+  .meal-sugg .item .t{ font-weight:500; font-size:14px; margin-bottom:3px; }
+  .meal-sugg .item .d{ font-size:12.5px; color:var(--ink-soft); }
+
+  /* Medical */
+  .upload-box{
+    border:1.5px dashed var(--line);
+    border-radius:var(--radius-m);
+    padding:34px 20px;
+    text-align:center;
+    color:var(--ink-soft);
+    font-size:14px;
+  }
+  .upload-box.has-file{ border-style:solid; border-color:var(--teal); }
+  table.report{ width:100%; border-collapse:collapse; margin-top:6px; font-size:13.5px; }
+  table.report th{ text-align:left; font-size:12px; color:var(--ink-soft); font-weight:500; padding:8px 10px; border-bottom:1px solid var(--line); }
+  table.report td{ padding:9px 10px; border-bottom:1px solid var(--line-soft); }
+  .flag{ font-size:11.5px; font-weight:600; padding:2px 8px; border-radius:20px; }
+  .flag.low{ background:var(--rust-wash); color:var(--rust); }
+  .flag.normal{ background:var(--teal-wash); color:var(--teal-deep); }
+  .flag.high{ background:var(--rust-wash); color:var(--rust); }
+
+  /* Wearables */
+  .wearable-grid{ display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
+  .wearable{
+    border:1px solid var(--line); border-radius:var(--radius-m);
+    padding:18px; text-align:center; background:#fff;
+  }
+  .wearable .icon{ font-size:26px; margin-bottom:8px; }
+  .wearable .name{ font-weight:500; font-size:14px; margin-bottom:10px; }
+  .wearable button{
+    width:100%; padding:8px; border-radius:var(--radius-s); font-size:13px; cursor:pointer;
+    border:1px solid var(--line); background:#fff; color:var(--ink-soft);
+  }
+  .wearable.connected{ border-color:var(--teal); }
+  .wearable.connected button{ background:var(--teal-wash); color:var(--teal-deep); border-color:var(--teal); }
+  .sync-stats{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-top:20px; }
+  .sync-stat{ background:#fff; border:1px solid var(--line); border-radius:var(--radius-s); padding:14px; text-align:center; }
+  .sync-stat .v{ font-family:'Fraunces', serif; font-size:22px; }
+  .sync-stat .l{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
+
+  @media (max-width: 620px){
+    .field-row{ grid-template-columns:1fr; }
+    .add-row{ grid-template-columns:1fr; }
+    .meal-sugg{ grid-template-columns:1fr; }
+    .wearable-grid{ grid-template-columns:repeat(2,1fr); }
+    .sync-stats{ grid-template-columns:repeat(2,1fr); }
+    .grid-2{ grid-template-columns:1fr; }
+    .main{ padding:24px 18px 60px; }
+  }
+
+  /* ---- Auth gate ---- */
+  #authGate{
+    min-height:100vh; display:flex; align-items:center; justify-content:center;
+    background:var(--paper); padding:24px;
+  }
+  .auth-card{
+    background:var(--panel); border:1px solid var(--line); border-radius:var(--radius-m);
+    padding:34px 32px; width:100%; max-width:380px;
+  }
+  .auth-brand{ text-align:center; margin-bottom:24px; }
+  .auth-brand .mark{ font-family:'Fraunces', serif; font-size:24px; font-weight:700; color:var(--teal-deep); }
+  .auth-brand .tag{ font-size:12.5px; color:var(--ink-soft); margin-top:5px; }
+  .auth-tabs{ display:flex; gap:4px; margin-bottom:22px; background:var(--line-soft); border-radius:8px; padding:4px; }
+  .auth-tab{
+    flex:1; text-align:center; padding:8px; border:none; background:none;
+    border-radius:6px; font-size:13.5px; color:var(--ink-soft); cursor:pointer; font-family:inherit;
+  }
+  .auth-tab.sel{ background:#fff; color:var(--ink); font-weight:500; box-shadow:0 1px 2px rgba(0,0,0,.08); }
+  .auth-form .field label{ font-size:12.5px; }
+  .google-btn{
+    width:100%; display:flex; align-items:center; justify-content:center; gap:10px;
+    padding:10px; border:1px solid var(--line); border-radius:var(--radius-s);
+    background:#fff; font-size:14px; font-weight:500; cursor:pointer; color:var(--ink);
+    font-family:inherit;
+  }
+  .google-btn:hover{ background:var(--line-soft); }
+  .google-btn:disabled{ opacity:.7; cursor:default; }
+  .auth-divider{ display:flex; align-items:center; gap:10px; margin:18px 0; color:var(--ink-faint); font-size:12px; }
+  .auth-divider::before, .auth-divider::after{ content:''; flex:1; height:1px; background:var(--line); }
+  .auth-note{ font-size:12px; color:var(--ink-faint); margin-top:18px; line-height:1.55; }
+  .auth-error{ font-size:12.5px; color:var(--rust); min-height:16px; margin-top:-6px; margin-bottom:10px; }
+
+  .sidebar{ display:flex; flex-direction:column; }
+  .nav{ flex:1; }
+  .user-chip{ display:flex; align-items:center; gap:10px; padding:14px 16px; border-top:1px solid var(--line); }
+  .user-avatar{
+    width:32px; height:32px; border-radius:50%; background:var(--teal); color:#fff;
+    display:flex; align-items:center; justify-content:center; font-weight:600; font-size:14px; flex-shrink:0;
+  }
+  .user-meta{ min-width:0; }
+  .user-name{ font-size:13px; font-weight:500; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .user-email{ font-size:11px; color:var(--ink-soft); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .signout-btn{
+    margin-left:auto; background:none; border:none; color:var(--ink-faint);
+    font-size:11.5px; cursor:pointer; flex-shrink:0; font-family:inherit;
+  }
+  .signout-btn:hover{ color:var(--rust); }
+
+  /* ---- Diet log dates & trends ---- */
+  #logDateInput, #rangeStart, #rangeEnd{ width:auto; }
+  .streak-pill{ font-weight:500; color:var(--teal-deep); }
+  .trend-chart{
+    display:flex; align-items:flex-end; gap:5px; height:150px;
+    padding:10px 4px 0; border-bottom:1px solid var(--line); overflow-x:auto;
+  }
+  .trend-bar-wrap{
+    display:flex; flex-direction:column; align-items:center; justify-content:flex-end;
+    height:100%; min-width:14px; flex:1 0 auto;
+  }
+  .trend-bar-track{ width:100%; max-width:22px; height:100%; display:flex; align-items:flex-end; }
+  .trend-bar{ width:100%; border-radius:3px 3px 0 0; background:var(--line-soft); min-height:2px; }
+  .trend-bar.short{ background:var(--rust); }
+  .trend-bar.met{ background:var(--teal); }
+  .trend-bar.over{ background:var(--steel); }
+  .trend-bar.empty{ background:var(--line-soft); }
+  .trend-day-label{ font-size:9.5px; color:var(--ink-faint); margin-top:5px; white-space:nowrap; }
+  .recur-item{ padding:10px 0; border-bottom:1px solid var(--line-soft); }
+  .recur-item:last-child{ border-bottom:none; }
+  .recur-item .rtitle{ display:flex; justify-content:space-between; font-size:14px; font-weight:500; }
+  .recur-item .rtitle .rcount{ font-family:'IBM Plex Mono', monospace; font-weight:500; font-size:12.5px; color:var(--rust); }
+  .recur-item .rbenefit{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; line-height:1.4; }
+</style>
+</head>
+<body>
+
+<div id="authGate">
+  <div class="auth-card">
+    <div class="auth-brand">
+      <div class="mark">NutriGap</div>
+      <div class="tag">Find the gap between what you eat and what your body needs.</div>
+    </div>
+
+    <div class="auth-tabs" id="authTabs">
+      <button class="auth-tab sel" data-tab="signin">Sign in</button>
+      <button class="auth-tab" data-tab="signup">Sign up</button>
+    </div>
+
+    <button class="google-btn" id="googleBtn">
+      <svg width="18" height="18" viewBox="0 0 18 18" xmlns="http://www.w3.org/2000/svg">
+        <path fill="#4285F4" d="M17.64 9.2c0-.64-.06-1.25-.16-1.84H9v3.48h4.84a4.14 4.14 0 01-1.8 2.72v2.26h2.9c1.7-1.57 2.68-3.88 2.68-6.62z"/>
+        <path fill="#34A853" d="M9 18c2.43 0 4.47-.8 5.96-2.18l-2.9-2.26c-.8.54-1.84.86-3.06.86-2.35 0-4.34-1.59-5.05-3.72H.96v2.33A9 9 0 009 18z"/>
+        <path fill="#FBBC05" d="M3.95 10.7A5.4 5.4 0 013.68 9c0-.59.1-1.17.27-1.7V4.97H.96A9 9 0 000 9c0 1.45.35 2.83.96 4.03l2.99-2.33z"/>
+        <path fill="#EA4335" d="M9 3.58c1.32 0 2.51.45 3.44 1.35l2.58-2.58C13.46.89 11.43 0 9 0A9 9 0 00.96 4.97L3.95 7.3C4.66 5.17 6.65 3.58 9 3.58z"/>
+      </svg>
+      <span id="googleBtnLabel">Continue with Google</span>
+    </button>
+
+    <div class="auth-divider">or</div>
+
+    <form class="auth-form" id="signinForm">
+      <div class="field">
+        <label for="siEmail">Email</label>
+        <input type="email" id="siEmail" placeholder="you@example.com" required>
+      </div>
+      <div class="field">
+        <label for="siPassword">Password</label>
+        <input type="password" id="siPassword" placeholder="••••••••" required>
+      </div>
+      <div class="auth-error" id="siError"></div>
+      <button type="submit" class="btn" style="width:100%; justify-content:center;">Sign in</button>
+    </form>
+
+    <form class="auth-form" id="signupForm" style="display:none;">
+      <div class="field">
+        <label for="suName">Name</label>
+        <input type="text" id="suName" placeholder="Your name" required>
+      </div>
+      <div class="field">
+        <label for="suEmail">Email</label>
+        <input type="email" id="suEmail" placeholder="you@example.com" required>
+      </div>
+      <div class="field">
+        <label for="suPassword">Password</label>
+        <input type="password" id="suPassword" placeholder="At least 8 characters" required minlength="8">
+      </div>
+      <div class="auth-error" id="suError"></div>
+      <button type="submit" class="btn" style="width:100%; justify-content:center;">Create account</button>
+    </form>
+
+    <div class="auth-note">This is a visual demo — no account is created and nothing leaves your browser. A production build would use a real auth provider (e.g. Firebase Auth or Auth0) with Google Sign-In through Google Identity Services (OAuth 2.0), verified server-side.</div>
+  </div>
+</div>
+
+<div class="shell" id="appShell" style="display:none;">
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="mark">NutriGap</div>
+      <div class="tag">Find the gap between what you eat and what your body needs.</div>
+    </div>
+    <nav class="nav" id="nav"></nav>
+    <div class="user-chip" id="userChip"></div>
+  </aside>
+
+  <main class="main">
+
+    <!-- PROFILE -->
+    <section class="panel" data-panel="profile">
+      <div class="page-head">
+        <h1>Your profile</h1>
+        <p>These details set your daily nutrient targets. Nothing here is stored outside this session.</p>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="field-row">
+            <div class="field">
+              <label for="age">Age (years)</label>
+              <input type="number" id="age" value="32" min="14" max="100">
+            </div>
+            <div class="field">
+              <label for="sex">Sex</label>
+              <select id="sex">
+                <option value="male">Male</option>
+                <option value="female">Female</option>
+              </select>
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="height">Height (cm)</label>
+              <input type="number" id="height" value="170">
+            </div>
+            <div class="field">
+              <label for="weight">Weight (kg)</label>
+              <input type="number" id="weight" value="68">
+            </div>
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label for="waist">Waist (cm) — optional</label>
+              <input type="number" id="waist" placeholder="e.g. 84">
+            </div>
+            <div class="field">
+              <label for="hip">Hip (cm) — optional</label>
+              <input type="number" id="hip" placeholder="e.g. 98">
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Body frame</label>
+            <div class="segmented" id="frameGroup">
+              <button data-val="small">Small</button>
+              <button data-val="medium" class="sel">Medium</button>
+              <button data-val="large">Large</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Daily activity level</label>
+            <div class="segmented" id="activityGroup">
+              <button data-val="1.2">Sedentary</button>
+              <button data-val="1.375" class="sel">Light</button>
+              <button data-val="1.55">Moderate</button>
+              <button data-val="1.725">Active</button>
+              <button data-val="1.9">Very active</button>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>Health goal</label>
+            <div class="segmented" id="goalGroup">
+              <button data-val="lose">Lose fat</button>
+              <button data-val="maintain" class="sel">Maintain</button>
+              <button data-val="gain">Build muscle</button>
+              <button data-val="manage">Manage a condition</button>
+            </div>
+          </div>
+
+          <div class="note" id="bodyTypeNote"></div>
+        </div>
+
+        <div>
+          <div class="target-card">
+            <div class="kcal-label">Estimated daily energy need</div>
+            <div class="kcal"><span id="tdeeOut">—</span> <span style="font-size:16px; font-weight:400;">kcal</span></div>
+
+            <div class="target-row"><span>Basal metabolic rate</span><span class="v" id="bmrOut">—</span></div>
+            <div class="target-sub">The calories your body burns just to stay alive — breathing, heartbeat, digestion, keeping your organs running — even if you stayed in bed all day and didn't move.</div>
+
+            <div class="target-row"><span>Activity adjustment</span><span class="v" id="actOut">—</span></div>
+            <div class="target-sub">Extra calories burned from moving around — walking, chores, workouts — on top of the basal rate above. The more active you told us you are, the bigger this number.</div>
+
+            <div class="target-row"><span>Goal adjustment</span><span class="v" id="goalAdjOut">—</span></div>
+            <div class="target-sub">Calories added or subtracted on top of what keeps your weight steady, sized for slow and sustainable change — not a crash diet or an aggressive surplus.</div>
+          </div>
+          <div class="note">Calculated with the Mifflin–St Jeor equation and standard activity multipliers. This is a population-level estimate, not a medical measurement — actual needs vary by 10–15%.</div>
+
+          <div class="card" id="outcomeCard" style="margin-top:20px;">
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Expected outcome</h3>
+            <div id="outcomeBody"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- DIET LOG -->
+    <section class="panel" data-panel="diet">
+      <div class="page-head">
+        <h1>Diet log</h1>
+        <p>Add what you've eaten, tagged by meal. Saved automatically so you can look back or edit any day.</p>
+      </div>
+
+      <div class="card" id="dateCard">
+        <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;">
+          <div class="field" style="margin-bottom:0;">
+            <label for="logDateInput">Logging for</label>
+            <input type="date" id="logDateInput">
+          </div>
+          <button class="btn ghost small" id="todayBtn">Jump to today</button>
+          <div id="streakBanner" style="margin-left:auto; font-size:13px; color:var(--ink-soft);"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="field">
+          <label>Which meal?</label>
+          <div class="segmented" id="mealGroup">
+            <button data-val="breakfast">Breakfast</button>
+            <button data-val="lunch">Lunch</button>
+            <button data-val="dinner">Dinner</button>
+            <button data-val="snack">Snack</button>
+          </div>
+        </div>
+        <div class="add-row">
+          <div class="field" style="margin-bottom:0;">
+            <label for="foodInput">Food</label>
+            <input type="text" id="foodInput" list="foodDatalist" placeholder="Start typing — e.g. dosa, rajma, paneer…" autocomplete="off">
+            <datalist id="foodDatalist"></datalist>
+          </div>
+          <div class="field" style="margin-bottom:0;">
+            <label for="servings">Servings</label>
+            <input type="number" id="servings" value="1" min="0.25" step="0.25">
+          </div>
+          <button class="btn" id="addFoodBtn">Add to log</button>
+        </div>
+        <div id="addFoodHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
+          <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Or describe it — type or speak</h3>
+          <button class="btn ghost small" id="micBtn">🎙️ Speak</button>
+        </div>
+        <textarea id="voiceText" rows="2" placeholder="e.g. two rotis and dal for lunch, a banana and a cup of milk for breakfast" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+        <div id="micStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
+        <div id="voiceUnsupportedNote" class="note" style="display:none;">Voice input isn't supported in this browser — type what you ate instead and press "Parse what I ate."</div>
+        <div style="text-align:right; margin-top:8px;">
+          <button class="btn ghost small" id="parseBtn">Parse what I ate</button>
+        </div>
+        <div id="parseReview" style="display:none; margin-top:16px;">
+          <div class="note" style="margin-top:0;">Check these before adding — matching is best-effort and may miss an item or get a quantity wrong.</div>
+          <div id="parseReviewList"></div>
+          <div style="text-align:right; margin-top:10px;">
+            <button class="btn" id="confirmParseBtn">Add checked items to log</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <table class="log" id="logTable">
+          <thead>
+            <tr><th>Food</th><th>Meal</th><th>Servings</th><th>Calories</th><th>Protein</th><th>Carbs</th><th>Fat</th><th></th></tr>
+          </thead>
+          <tbody id="logBody"></tbody>
+        </table>
+        <div class="empty" id="logEmpty">No entries yet for this day — add your first food above.</div>
+        <div id="saveStatus" style="font-size:11.5px; color:var(--ink-faint); margin-top:10px; min-height:14px;"></div>
+      </div>
+    </section>
+
+    <!-- GAP ANALYSIS -->
+    <section class="panel" data-panel="gaps">
+      <div class="page-head">
+        <h1>Nutrient gap</h1>
+        <p id="gapsSubtitle">What today's diet log covers against your daily target, macro and micro.</p>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Macronutrients</h3>
+          <div id="macroGaps"></div>
+          <h3 style="font-size:15px; color:var(--ink-soft); font-weight:500; margin-top:24px;">Key micronutrients</h3>
+          <div id="microGaps"></div>
+          <div class="note">Micronutrient targets shown are general adult RDAs (ICMR-NIN / USDA reference values), not adjusted for pregnancy, illness, or lab-confirmed deficiency. Sodium is shown as an upper limit, not a minimum — being under it is the goal, not a gap to fill.</div>
+        </div>
+
+        <div class="insight-card">
+          <div class="disclaimer">
+            <strong>Sample output</strong>
+            This analysis is generated by rule-based logic in this prototype for demonstration. In production, this panel sends your computed gaps and goal to Claude, with a system prompt that limits it to general dietary guidance — never a diagnosis or a guaranteed outcome.
+          </div>
+          <h3 id="insightHeading">What today's log suggests</h3>
+          <p id="insightText">Add some food to your log to see an analysis here.</p>
+          <div class="meal-sugg" id="mealSugg"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRENDS & HISTORY -->
+    <section class="panel" data-panel="trends">
+      <div class="page-head">
+        <h1>Trends & history</h1>
+        <p>How your nutrient gap has moved over time, and which gaps keep showing up.</p>
+      </div>
+
+      <div class="card" style="background:var(--steel-wash); border-color:#c3d4e0;">
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; justify-content:space-between;">
+          <div style="font-size:13px; color:#233b4d; max-width:52ch;">
+            <strong style="display:block; margin-bottom:2px;">Testing utility</strong>
+            No history yet? Populate the last 14 days with a realistic sample diet — including a couple of skipped days — so you can see the chart, streaks, and recurring gaps working with real data.
+          </div>
+          <div style="display:flex; gap:8px; flex-shrink:0;">
+            <button class="btn ghost small" id="loadSampleBtn">Load sample data</button>
+            <button class="btn ghost small" id="clearSampleBtn">Clear all history</button>
+          </div>
+        </div>
+        <div id="sampleConfirmRow" style="display:none; align-items:center; gap:10px; flex-wrap:wrap; margin-top:12px; padding-top:12px; border-top:1px solid #c3d4e0;">
+          <span id="sampleConfirmMsg" style="font-size:13px; color:#233b4d; font-weight:500;"></span>
+          <button class="btn small" id="sampleConfirmYes" style="background:var(--rust);">Yes, continue</button>
+          <button class="btn ghost small" id="sampleConfirmNo">Cancel</button>
+        </div>
+        <div id="sampleStatus" style="font-size:12.5px; color:#233b4d; margin-top:10px; min-height:16px;"></div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; align-items:center; gap:14px; flex-wrap:wrap;">
+          <div class="segmented" id="rangeGroup">
+            <button data-val="7" class="sel">7 days</button>
+            <button data-val="14">14 days</button>
+            <button data-val="30">30 days</button>
+            <button data-val="custom">Custom</button>
+          </div>
+          <div id="customRangeRow" style="display:none; align-items:flex-end; gap:10px;">
+            <div class="field" style="margin-bottom:0;">
+              <label for="rangeStart">From</label>
+              <input type="date" id="rangeStart">
+            </div>
+            <div class="field" style="margin-bottom:0;">
+              <label for="rangeEnd">To</label>
+              <input type="date" id="rangeEnd">
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="outcome-stats" id="trendStats" style="grid-template-columns:repeat(4,1fr);"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Calories logged vs. target</h3>
+        <div class="trend-chart" id="trendChart"></div>
+        <div class="note" id="trendChartNote" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Recurring gaps</h3>
+          <div id="recurringGaps"></div>
+          <div class="note">Calculated against your current profile targets applied retroactively across the period — not the targets that may have been in effect on each day if your profile changed.</div>
+        </div>
+        <div class="insight-card">
+          <div class="disclaimer">
+            <strong>Sample output</strong>
+            This trend summary is rule-based in this prototype. In production, this would send your period-over-period gap history to Claude for a written summary, under the same fact-only, no-diagnosis constraints as the daily insight panel.
+          </div>
+          <h3>What this period suggests</h3>
+          <p id="trendInsightText">Log a few days to see a trend summary here.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- MEDICAL -->
+    <section class="panel" data-panel="medical">
+      <div class="page-head">
+        <h1>Medical report reader</h1>
+        <p>Upload a lab report to see values compared against standard reference ranges.</p>
+      </div>
+
+      <div class="disclaimer warn">
+        <strong>How this works, and what it will never do</strong>
+        This tool reads values that are explicitly present in your report and compares them only to published lab reference ranges. It does not diagnose, does not infer conditions you haven't been tested for, and does not recommend treatment. It will not guess at a value that isn't in the document. Always review results with your doctor.
+      </div>
+
+      <div class="card">
+        <div class="upload-box" id="uploadBox">
+          <div id="uploadPrompt">Drop a PDF or image of your lab report here, or</div>
+          <div style="margin-top:12px;">
+            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png" style="display:none;">
+            <button class="btn ghost small" id="chooseFileBtn">Choose file</button>
+          </div>
+        </div>
+        <div id="analyzeRow" style="display:none; margin-top:16px; text-align:right;">
+          <button class="btn" id="analyzeBtn">Analyze report</button>
+        </div>
+
+        <div id="reportOutput" style="display:none; margin-top:24px;">
+          <div class="disclaimer">
+            <strong>Illustrative sample — not your actual report</strong>
+            This prototype does not perform real document extraction. The rows below show the format the live version would produce, using Claude to read only the numbers printed in your file.
+          </div>
+          <table class="report">
+            <thead><tr><th>Marker</th><th>Reported value</th><th>Reference range</th><th></th></tr></thead>
+            <tbody>
+              <tr><td>Hemoglobin</td><td>11.2 g/dL</td><td>13.0 – 17.0 g/dL</td><td><span class="flag low">Below range</span></td></tr>
+              <tr><td>Fasting glucose</td><td>94 mg/dL</td><td>70 – 99 mg/dL</td><td><span class="flag normal">Within range</span></td></tr>
+              <tr><td>Vitamin D (25-OH)</td><td>18 ng/mL</td><td>30 – 100 ng/mL</td><td><span class="flag low">Below range</span></td></tr>
+              <tr><td>TSH</td><td>2.1 µIU/mL</td><td>0.4 – 4.0 µIU/mL</td><td><span class="flag normal">Within range</span></td></tr>
+              <tr><td>LDL cholesterol</td><td>142 mg/dL</td><td>&lt; 100 mg/dL (optimal)</td><td><span class="flag high">Above range</span></td></tr>
+            </tbody>
+          </table>
+          <div class="note">Two values sit outside their reference range. That is a fact stated in your report, not a diagnosis — bring these results to your doctor to discuss what, if anything, they mean for you.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- WEARABLES -->
+    <section class="panel" data-panel="wearables">
+      <div class="page-head">
+        <h1>Connect a wearable</h1>
+        <p>Sync activity and sleep data so your energy target adjusts to what you actually did today.</p>
+      </div>
+      <div class="card">
+        <div class="wearable-grid" id="wearableGrid"></div>
+        <div class="note">This prototype simulates a connection locally. A live build authenticates through each brand's official OAuth flow (Fitbit Web API, Google Fit / Health Connect, Garmin Connect, Apple HealthKit via a companion iOS app) and never stores your wearable password.</div>
+
+        <div class="sync-stats" id="syncStats" style="display:none;">
+          <div class="sync-stat"><div class="v">8,412</div><div class="l">Steps today</div></div>
+          <div class="sync-stat"><div class="v">2,180</div><div class="l">Active kcal</div></div>
+          <div class="sync-stat"><div class="v">6h 52m</div><div class="l">Sleep last night</div></div>
+          <div class="sync-stat"><div class="v">64</div><div class="l">Resting HR</div></div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+// ---------- Auth (visual demo only — see auth-note in the UI) ----------
+const session = { user: null };
+
+function showApp(user){
+  session.user = user;
+  document.getElementById('authGate').style.display = 'none';
+  const shell = document.getElementById('appShell');
+  shell.style.display = 'grid';
+  renderUserChip();
+}
+
+function renderUserChip(){
+  const chip = document.getElementById('userChip');
+  if(!session.user){ chip.innerHTML=''; return; }
+  const initial = session.user.name.trim().charAt(0).toUpperCase() || '?';
+  chip.innerHTML = `<div class="user-avatar">${initial}</div>
+    <div class="user-meta">
+      <div class="user-name">${session.user.name}</div>
+      <div class="user-email">${session.user.email}</div>
+    </div>
+    <button class="signout-btn" id="signoutBtn">Sign out</button>`;
+  document.getElementById('signoutBtn').onclick = ()=>{
+    session.user = null;
+    document.getElementById('appShell').style.display = 'none';
+    document.getElementById('authGate').style.display = 'flex';
+    document.getElementById('signinForm').reset();
+    document.getElementById('signupForm').reset();
+  };
+}
+
+// Tabs
+document.getElementById('authTabs').querySelectorAll('.auth-tab').forEach(tab=>{
+  tab.onclick = ()=>{
+    document.querySelectorAll('.auth-tab').forEach(t=>t.classList.remove('sel'));
+    tab.classList.add('sel');
+    const isSignin = tab.dataset.tab === 'signin';
+    document.getElementById('signinForm').style.display = isSignin ? 'block' : 'none';
+    document.getElementById('signupForm').style.display = isSignin ? 'none' : 'block';
+  };
+});
+
+// Email/password sign in — demo only, accepts any well-formed input
+document.getElementById('signinForm').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  const email = document.getElementById('siEmail').value.trim();
+  const errorEl = document.getElementById('siError');
+  if(!email){ errorEl.textContent = 'Enter your email to continue.'; return; }
+  errorEl.textContent = '';
+  const name = email.split('@')[0].replace(/[._]/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
+  showApp({ name, email, provider:'email' });
+});
+
+document.getElementById('signupForm').addEventListener('submit', (e)=>{
+  e.preventDefault();
+  const name = document.getElementById('suName').value.trim();
+  const email = document.getElementById('suEmail').value.trim();
+  const password = document.getElementById('suPassword').value;
+  const errorEl = document.getElementById('suError');
+  if(!name || !email){ errorEl.textContent = 'Fill in your name and email to continue.'; return; }
+  if(password.length < 8){ errorEl.textContent = 'Password needs at least 8 characters.'; return; }
+  errorEl.textContent = '';
+  showApp({ name, email, provider:'email' });
+});
+
+// Google sign-in — simulated. A real build uses Google Identity Services
+// (google.accounts.id) with a registered OAuth client ID, verifying the
+// returned credential server-side before creating a session.
+document.getElementById('googleBtn').onclick = ()=>{
+  const btn = document.getElementById('googleBtn');
+  const label = document.getElementById('googleBtnLabel');
+  btn.disabled = true;
+  label.textContent = 'Connecting to Google…';
+  setTimeout(()=>{
+    btn.disabled = false;
+    label.textContent = 'Continue with Google';
+    showApp({ name:'Alex Kumar', email:'alex.kumar@gmail.com', provider:'google' });
+  }, 700);
+};
+
+// ---------- Nav ----------
+const sections = [
+  {id:'profile', label:'Profile & targets'},
+  {id:'diet', label:'Diet log'},
+  {id:'gaps', label:'Nutrient gap'},
+  {id:'trends', label:'Trends & history'},
+  {id:'medical', label:'Medical reports'},
+  {id:'wearables', label:'Wearables'},
+];
+const nav = document.getElementById('nav');
+sections.forEach((s,i)=>{
+  const b = document.createElement('button');
+  b.className = 'nav-item' + (i===0 ? ' active' : '');
+  b.dataset.target = s.id;
+  b.innerHTML = `<span class="n">${String(i+1).padStart(2,'0')}</span><span>${s.label}</span>`;
+  b.onclick = ()=> showPanel(s.id);
+  nav.appendChild(b);
+});
+function showPanel(id){
+  document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active', p.dataset.panel===id));
+  document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.target===id));
+  window.scrollTo({top:0});
+  if(id === 'trends') renderTrends();
+}
+showPanel('profile');
+
+// ---------- Segmented controls ----------
+function wireSegment(id){
+  const group = document.getElementById(id);
+  group.querySelectorAll('button').forEach(btn=>{
+    btn.onclick = ()=>{
+      group.querySelectorAll('button').forEach(b=>b.classList.remove('sel'));
+      btn.classList.add('sel');
+      recalc();
+    };
+  });
+}
+['frameGroup','activityGroup','goalGroup','mealGroup'].forEach(wireSegment);
+
+// Default meal selection to whatever time of day it is
+(function setDefaultMeal(){
+  const hour = new Date().getHours();
+  const val = hour < 11 ? 'breakfast' : hour < 15 ? 'lunch' : hour < 18 ? 'snack' : 'dinner';
+  const group = document.getElementById('mealGroup');
+  group.querySelectorAll('button').forEach(b=>{
+    b.classList.toggle('sel', b.dataset.val === val);
+  });
+})();
+
+function getSel(id){ return document.querySelector('#'+id+' button.sel').dataset.val; }
+
+// ---------- Profile calc ----------
+function recalc(){
+  const age = +document.getElementById('age').value || 0;
+  const sex = document.getElementById('sex').value;
+  const height = +document.getElementById('height').value || 0;
+  const weight = +document.getElementById('weight').value || 0;
+  const activity = +getSel('activityGroup');
+  const goal = getSel('goalGroup');
+  const frame = getSel('frameGroup');
+
+  const bmr = sex === 'male'
+    ? 10*weight + 6.25*height - 5*age + 5
+    : 10*weight + 6.25*height - 5*age - 161;
+  const activityCals = bmr * activity;
+  const goalAdj = {lose:-500, maintain:0, gain:300, manage:0}[goal];
+  const tdee = Math.round(activityCals + goalAdj);
+
+  document.getElementById('bmrOut').textContent = Math.round(bmr) + ' kcal';
+  document.getElementById('actOut').textContent = '×' + activity;
+  document.getElementById('goalAdjOut').textContent = (goalAdj>0?'+':'') + goalAdj + ' kcal';
+  document.getElementById('tdeeOut').textContent = tdee.toLocaleString();
+
+  const proteinFactor = {lose:1.8, maintain:1.2, gain:1.8, manage:1.1}[goal];
+  const proteinG = Math.round(weight * proteinFactor);
+  const fatG = Math.round((tdee*0.25)/9);
+  const carbG = Math.round((tdee - proteinG*4 - fatG*9)/4);
+  const fiberG = Math.max(25, Math.round(tdee/1000*14));
+
+  const ironRDA = sex==='female' ? 18 : 8;
+  const vitCRDA = sex==='female' ? 75 : 90;
+  const vitARDA = sex==='female' ? 700 : 900;
+  const vitKRDA = sex==='female' ? 90 : 120;
+  const magnesiumRDA = sex==='female' ? 310 : 400;
+  const zincRDA = sex==='female' ? 8 : 11;
+  const potassiumRDA = sex==='female' ? 2600 : 3400;
+
+  state.targets = {
+    kcal: tdee, protein: proteinG, carbs: carbG, fat: fatG, fiber: fiberG,
+    iron: ironRDA, calcium: 1000, vitD: 15, vitB12: 2.4, vitC: vitCRDA,
+    vitA: vitARDA, vitE: 15, vitK: vitKRDA, folate: 400, vitB6: 1.3,
+    magnesium: magnesiumRDA, zinc: zincRDA, potassium: potassiumRDA,
+    sodium: 2300, selenium: 55
+  };
+
+  const frameNote = {
+    small:'Smaller frame — protein and fiber targets below are calculated from your actual weight, so they already account for build.',
+    medium:'Medium frame — standard targets apply as calculated.',
+    large:'Larger frame — standard targets apply; if you strength-train heavily, consider the upper end of the protein range.'
+  };
+  document.getElementById('bodyTypeNote').textContent = frameNote[frame];
+
+  renderOutcome(weight, goalAdj, goal);
+  renderGaps();
+}
+
+// ---------- Expected outcome projection ----------
+// 7,700 kcal is the commonly used approximation for 1 kg of body fat energy content.
+function renderOutcome(weight, goalAdjKcal, goal){
+  const weeklyDeltaKg = (goalAdjKcal * 7) / 7700;
+  const weeksArr = [4, 8, 12];
+  const rows = weeksArr.map(w=>{
+    const lo = weight + weeklyDeltaKg * w * 0.8;
+    const hi = weight + weeklyDeltaKg * w * 1.2;
+    const min = Math.min(lo, hi).toFixed(1);
+    const max = Math.max(lo, hi).toFixed(1);
+    return `<div class="outcome-stat"><div class="v">${min}–${max} kg</div><div class="l">In ${w} weeks</div></div>`;
+  }).join('');
+
+  const captions = {
+    lose: `Based on a ${Math.abs(goalAdjKcal)} kcal/day deficit, this is the fat-loss math worked forward — roughly ${Math.abs(weeklyDeltaKg).toFixed(2)} kg a week if you hit your target consistently. The first 1–2 weeks often move faster from water weight, not fat, so expect the pace to settle after that. This is a projection from the calorie math above, not a guarantee — sleep, stress, and day-to-day adherence all shift the real number.`,
+    gain: `Based on a ${goalAdjKcal} kcal/day surplus, the range above is total bodyweight change — not muscle specifically. Without resistance training, most of a surplus becomes fat. With consistent strength training and enough protein, realistic lean-muscle gain is closer to 0.25–0.5 kg a month, so treat this range as an upper bound on bodyweight rather than a muscle target.`,
+    maintain: `Your goal adjustment is 0 kcal, so the range above is mostly noise — day-to-day shifts of half a kilogram or more are normal and usually water or food volume, not fat or muscle. Weight staying stable over several weeks is the real signal, not any single day's number.`,
+    manage: `Your energy target here is set for stability rather than a specific weight change. Track the markers your clinician asked you to watch — this tool does not model outcomes for a diagnosed condition.`
+  };
+
+  document.getElementById('outcomeBody').innerHTML = `
+    <div class="outcome-stats">${rows}</div>
+    <p class="outcome-note">${captions[goal]}</p>
+  `;
+}
+['age','sex','height','weight'].forEach(id=>{
+  document.getElementById(id).addEventListener('input', recalc);
+});
+
+// ---------- Food database ----------
+// Each food carries "keywords" — words a person might actually say or type —
+// used both for voice/text matching and for the search box below.
+const FOODS = [
+  // Grains & starches
+  {name:'Cooked rice (1 cup)', keywords:['rice','white rice','steamed rice'], kcal:205, protein:4.3, carbs:44.5, fat:0.4, fiber:0.6, iron:1.9, calcium:16, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:3, vitB6:0.1, magnesium:19, zinc:0.8, potassium:55, sodium:2, selenium:9},
+  {name:'Brown rice, cooked (1 cup)', keywords:['brown rice'], kcal:216, protein:5, carbs:45, fat:1.8, fiber:3.5, iron:0.8, calcium:20, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:0, folate:8, vitB6:0.3, magnesium:84, zinc:1.2, potassium:84, sodium:10, selenium:19},
+  {name:'Whole wheat roti (1 medium)', keywords:['roti','chapati','phulka'], kcal:104, protein:3.1, carbs:18, fat:2.5, fiber:3, iron:1.2, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:0.5, folate:10, vitB6:0.1, magnesium:25, zinc:0.6, potassium:70, sodium:95, selenium:8},
+  {name:'Naan (1 piece)', keywords:['naan'], kcal:262, protein:9, carbs:45, fat:5, fiber:2, iron:2.4, calcium:60, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:1, folate:60, vitB6:0.1, magnesium:20, zinc:0.7, potassium:90, sodium:400, selenium:15},
+  {name:'Paratha, plain (1 medium)', keywords:['paratha','parantha'], kcal:210, protein:4, carbs:27, fat:10, fiber:2, iron:1.5, calcium:20, vitD:0, vitB12:0, vitC:0, vitA:20, vitE:1, vitK:3, folate:15, vitB6:0.1, magnesium:20, zinc:0.6, potassium:80, sodium:210, selenium:8},
+  {name:'Idli (2 pieces)', keywords:['idli'], kcal:78, protein:2.4, carbs:16, fat:0.4, fiber:0.5, iron:0.5, calcium:5, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:10, vitB6:0.05, magnesium:15, zinc:0.5, potassium:60, sodium:290, selenium:8},
+  {name:'Plain dosa (1 medium)', keywords:['dosa','plain dosa'], kcal:133, protein:2.7, carbs:22, fat:3.7, fiber:0.8, iron:0.7, calcium:8, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:0, folate:15, vitB6:0.05, magnesium:15, zinc:0.5, potassium:65, sodium:250, selenium:8},
+  {name:'Masala dosa (1 medium)', keywords:['masala dosa'], kcal:250, protein:5, carbs:35, fat:10, fiber:3, iron:1.5, calcium:25, vitD:0, vitB12:0, vitC:5, vitA:60, vitE:1, vitK:3, folate:30, vitB6:0.2, magnesium:30, zinc:0.8, potassium:250, sodium:380, selenium:10},
+  {name:'Uttapam (1 piece)', keywords:['uttapam','uthappam'], kcal:170, protein:4, carbs:28, fat:4.5, fiber:1.5, iron:1, calcium:20, vitD:0, vitB12:0, vitC:3, vitA:15, vitE:0.3, vitK:2, folate:20, vitB6:0.1, magnesium:20, zinc:0.6, potassium:100, sodium:300, selenium:8},
+  {name:'Poha (1 cup)', keywords:['poha','flattened rice'], kcal:180, protein:3.5, carbs:30, fat:5, fiber:2, iron:2, calcium:15, vitD:0, vitB12:0, vitC:5, vitA:30, vitE:1, vitK:5, folate:20, vitB6:0.1, magnesium:20, zinc:0.6, potassium:120, sodium:220, selenium:5},
+  {name:'Upma (1 cup)', keywords:['upma','rava upma'], kcal:200, protein:5, carbs:30, fat:7, fiber:2.5, iron:1.5, calcium:20, vitD:0, vitB12:0, vitC:3, vitA:40, vitE:1.5, vitK:5, folate:20, vitB6:0.1, magnesium:25, zinc:0.7, potassium:130, sodium:320, selenium:6},
+  {name:'Khichdi (1 cup)', keywords:['khichdi','khichadi'], kcal:220, protein:8, carbs:35, fat:5, fiber:4, iron:2, calcium:25, vitD:0, vitB12:0, vitC:2, vitA:30, vitE:1, vitK:10, folate:40, vitB6:0.2, magnesium:40, zinc:1.2, potassium:200, sodium:280, selenium:10},
+  {name:'Bread slice, white (1 slice)', keywords:['bread','white bread','toast'], kcal:79, protein:2.7, carbs:15, fat:1, fiber:0.8, iron:0.9, calcium:30, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:20, vitB6:0.02, magnesium:6, zinc:0.2, potassium:30, sodium:150, selenium:8},
+  {name:'Bread slice, brown (1 slice)', keywords:['brown bread','whole wheat bread'], kcal:82, protein:4, carbs:13.8, fat:1.1, fiber:1.9, iron:0.9, calcium:30, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:1, folate:12, vitB6:0.05, magnesium:12, zinc:0.5, potassium:50, sodium:145, selenium:10},
+  {name:'Multigrain bread (1 slice)', keywords:['multigrain bread'], kcal:85, protein:4, carbs:14, fat:1.5, fiber:2, iron:1, calcium:30, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:2, folate:15, vitB6:0.05, magnesium:20, zinc:0.6, potassium:60, sodium:140, selenium:12},
+  {name:'Oats, cooked (1 cup)', keywords:['oats','oatmeal','porridge'], kcal:166, protein:6, carbs:28, fat:3.6, fiber:4, iron:2, calcium:20, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.4, vitK:2, folate:14, vitB6:0.1, magnesium:60, zinc:2.3, potassium:165, sodium:9, selenium:19},
+  {name:'Muesli (1 cup)', keywords:['muesli'], kcal:289, protein:8, carbs:66, fat:4.5, fiber:7.5, iron:3, calcium:50, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:1, vitK:3, folate:40, vitB6:0.3, magnesium:90, zinc:2, potassium:300, sodium:100, selenium:10},
+  {name:'Cornflakes (1 cup)', keywords:['cornflakes','cereal'], kcal:100, protein:2, carbs:24, fat:0.3, fiber:0.8, iron:8, calcium:1, vitD:0, vitB12:0, vitC:0, vitA:150, vitE:0.5, vitK:0, folate:100, vitB6:0.5, magnesium:10, zinc:4, potassium:35, sodium:200, selenium:3},
+  {name:'Pasta, cooked (1 cup)', keywords:['pasta','macaroni'], kcal:220, protein:8, carbs:43, fat:1.3, fiber:2.5, iron:2, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:2, folate:100, vitB6:0.1, magnesium:25, zinc:1, potassium:45, sodium:5, selenium:30},
+  {name:'Noodles, cooked (1 cup)', keywords:['noodles','hakka noodles'], kcal:190, protein:5, carbs:40, fat:1, fiber:1.8, iron:1.5, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:2, folate:20, vitB6:0.1, magnesium:20, zinc:0.8, potassium:40, sodium:190, selenium:15},
+  {name:'Quinoa, cooked (1 cup)', keywords:['quinoa'], kcal:222, protein:8, carbs:39, fat:3.6, fiber:5, iron:2.8, calcium:31, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:1.2, vitK:0, folate:78, vitB6:0.2, magnesium:118, zinc:2, potassium:318, sodium:13, selenium:5},
+  {name:'Ragi porridge (1 cup)', keywords:['ragi','finger millet','ragi porridge'], kcal:170, protein:5, carbs:32, fat:2, fiber:4, iron:3, calcium:300, vitD:0, vitB12:0, vitC:0, vitA:5, vitE:0.3, vitK:2, folate:15, vitB6:0.2, magnesium:80, zinc:1.5, potassium:200, sodium:5, selenium:3},
+  {name:'Bajra roti (1 medium)', keywords:['bajra','pearl millet roti'], kcal:120, protein:3.5, carbs:20, fat:3, fiber:2, iron:2, calcium:15, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:1, folate:10, vitB6:0.1, magnesium:45, zinc:0.8, potassium:100, sodium:5, selenium:5},
+  {name:'Jowar roti (1 medium)', keywords:['jowar','sorghum roti'], kcal:130, protein:3.5, carbs:24, fat:2, fiber:3, iron:1.5, calcium:12, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:1, folate:10, vitB6:0.1, magnesium:45, zinc:0.7, potassium:130, sodium:5, selenium:4},
+  {name:'Corn, boiled (1 cup)', keywords:['corn','sweet corn','maize'], kcal:130, protein:5, carbs:29, fat:1.8, fiber:3.5, iron:0.6, calcium:3, vitD:0, vitB12:0, vitC:6, vitA:15, vitE:0.1, vitK:0.5, folate:76, vitB6:0.1, magnesium:32, zinc:0.7, potassium:270, sodium:20, selenium:0.5},
+  {name:'Popcorn, plain (1 cup)', keywords:['popcorn'], kcal:31, protein:1, carbs:6, fat:0.4, fiber:1.2, iron:0.3, calcium:1, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.02, vitK:0, folate:2, vitB6:0.02, magnesium:11, zinc:0.3, potassium:25, sodium:1, selenium:1},
+
+  // Legumes & pulses
+  {name:'Dal / lentil curry (1 cup)', keywords:['dal','lentil','lentils','toor dal','moong dal','masoor dal'], kcal:230, protein:18, carbs:40, fat:0.8, fiber:16, iron:6.6, calcium:37, vitD:0, vitB12:0, vitC:1.5, vitA:20, vitE:0.3, vitK:3, folate:180, vitB6:0.2, magnesium:70, zinc:2.5, potassium:500, sodium:350, selenium:5},
+  {name:'Rajma / kidney bean curry (1 cup)', keywords:['rajma','kidney beans'], kcal:260, protein:15, carbs:40, fat:3, fiber:13, iron:5, calcium:70, vitD:0, vitB12:0, vitC:3, vitA:5, vitE:0.2, vitK:3, folate:130, vitB6:0.2, magnesium:80, zinc:2, potassium:600, sodium:380, selenium:3},
+  {name:'Chole / chickpea curry (1 cup)', keywords:['chole','chana','chickpea','chickpeas','garbanzo'], kcal:270, protein:12, carbs:40, fat:8, fiber:11, iron:4.5, calcium:80, vitD:0, vitB12:0, vitC:5, vitA:10, vitE:0.5, vitK:5, folate:280, vitB6:0.2, magnesium:80, zinc:2.5, potassium:480, sodium:400, selenium:6},
+  {name:'Sambar (1 cup)', keywords:['sambar'], kcal:120, protein:6, carbs:18, fat:3, fiber:6, iron:2, calcium:30, vitD:0, vitB12:0, vitC:8, vitA:100, vitE:1, vitK:20, folate:50, vitB6:0.15, magnesium:40, zinc:1, potassium:300, sodium:420, selenium:3},
+  {name:'Rasam (1 cup)', keywords:['rasam'], kcal:60, protein:2, carbs:10, fat:1.5, fiber:2, iron:1, calcium:15, vitD:0, vitB12:0, vitC:6, vitA:30, vitE:0.3, vitK:5, folate:20, vitB6:0.1, magnesium:15, zinc:0.5, potassium:150, sodium:380, selenium:2},
+  {name:'Soy chunks, cooked (1 cup)', keywords:['soy chunks','soya chunks','nutrela'], kcal:230, protein:26, carbs:20, fat:5, fiber:10, iron:6, calcium:100, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:30, folate:100, vitB6:0.3, magnesium:90, zinc:3, potassium:500, sodium:8, selenium:8},
+  {name:'Tofu (100g)', keywords:['tofu'], kcal:76, protein:8, carbs:1.9, fat:4.8, fiber:0.3, iron:5.4, calcium:350, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:2, folate:15, vitB6:0.05, magnesium:30, zinc:0.8, potassium:120, sodium:7, selenium:8},
+  {name:'Sprouted moong salad (1 cup)', keywords:['sprouts','sprouted moong','moong sprouts'], kcal:105, protein:7, carbs:19, fat:0.4, fiber:8, iron:1.4, calcium:27, vitD:0, vitB12:0, vitC:14, vitA:3, vitE:0.1, vitK:8, folate:62, vitB6:0.1, magnesium:22, zinc:0.8, potassium:150, sodium:15, selenium:1},
+
+  // Protein / non-veg
+  {name:'Chicken breast, cooked (100g)', keywords:['chicken breast','grilled chicken','chicken'], kcal:165, protein:31, carbs:0, fat:3.6, fiber:0, iron:1, calcium:15, vitD:0.1, vitB12:0.3, vitC:0, vitA:6, vitE:0.3, vitK:0, folate:4, vitB6:0.6, magnesium:29, zinc:1, potassium:256, sodium:74, selenium:22},
+  {name:'Chicken curry (1 cup)', keywords:['chicken curry'], kcal:280, protein:25, carbs:8, fat:17, fiber:1.5, iron:2, calcium:40, vitD:0, vitB12:0.4, vitC:3, vitA:40, vitE:1, vitK:5, folate:15, vitB6:0.5, magnesium:30, zinc:2, potassium:300, sodium:480, selenium:20},
+  {name:'Fish curry (1 cup)', keywords:['fish curry'], kcal:220, protein:22, carbs:6, fat:12, fiber:1, iron:1.5, calcium:60, vitD:3, vitB12:2, vitC:3, vitA:30, vitE:1, vitK:5, folate:15, vitB6:0.4, magnesium:35, zinc:1, potassium:350, sodium:460, selenium:30},
+  {name:'Fish, grilled (100g)', keywords:['fish','salmon','grilled fish'], kcal:208, protein:20, carbs:0, fat:13, fiber:0, iron:0.5, calcium:12, vitD:11, vitB12:2.6, vitC:0, vitA:60, vitE:1.5, vitK:0, folate:25, vitB6:0.6, magnesium:27, zinc:0.6, potassium:384, sodium:60, selenium:40},
+  {name:'Prawns, cooked (100g)', keywords:['prawns','shrimp'], kcal:99, protein:24, carbs:0.2, fat:0.3, fiber:0, iron:0.5, calcium:70, vitD:0, vitB12:1.3, vitC:0, vitA:60, vitE:1.5, vitK:0, folate:10, vitB6:0.1, magnesium:39, zinc:1.5, potassium:259, sodium:111, selenium:40},
+  {name:'Mutton curry (1 cup)', keywords:['mutton','mutton curry','lamb curry'], kcal:310, protein:25, carbs:6, fat:20, fiber:1, iron:3, calcium:30, vitD:0, vitB12:2, vitC:2, vitA:5, vitE:0.5, vitK:5, folate:10, vitB6:0.3, magnesium:25, zinc:4, potassium:300, sodium:450, selenium:20},
+  {name:'Egg, boiled (1 large)', keywords:['egg','boiled egg'], kcal:78, protein:6.3, carbs:0.6, fat:5.3, fiber:0, iron:0.9, calcium:25, vitD:1.1, vitB12:0.6, vitC:0, vitA:75, vitE:0.5, vitK:0, folate:24, vitB6:0.1, magnesium:6, zinc:0.6, potassium:63, sodium:62, selenium:15},
+  {name:'Egg curry (1 cup, 2 eggs)', keywords:['egg curry'], kcal:260, protein:14, carbs:8, fat:19, fiber:1.5, iron:2, calcium:60, vitD:1.5, vitB12:1, vitC:3, vitA:130, vitE:1.2, vitK:3, folate:40, vitB6:0.2, magnesium:20, zinc:1.2, potassium:200, sodium:420, selenium:25},
+  {name:'Omelette (2 eggs)', keywords:['omelette','omelet'], kcal:220, protein:13, carbs:2, fat:17, fiber:0, iron:1.6, calcium:40, vitD:1.8, vitB12:0.9, vitC:0, vitA:150, vitE:1, vitK:0, folate:40, vitB6:0.2, magnesium:12, zinc:1.2, potassium:130, sodium:320, selenium:28},
+
+  // Dairy
+  {name:'Milk, whole (1 cup)', keywords:['milk'], kcal:149, protein:7.7, carbs:12, fat:8, fiber:0, iron:0.1, calcium:276, vitD:2.9, vitB12:1.1, vitC:0, vitA:112, vitE:0.1, vitK:0, folate:12, vitB6:0.1, magnesium:24, zinc:1, potassium:322, sodium:105, selenium:6},
+  {name:'Curd / plain yogurt (1 cup)', keywords:['curd','yogurt','yoghurt','dahi'], kcal:149, protein:8.5, carbs:11.4, fat:8, fiber:0, iron:0.1, calcium:296, vitD:0, vitB12:1.4, vitC:1.2, vitA:68, vitE:0.1, vitK:0, folate:20, vitB6:0.1, magnesium:26, zinc:1.6, potassium:350, sodium:100, selenium:8},
+  {name:'Greek yogurt (1 cup)', keywords:['greek yogurt','greek yoghurt'], kcal:150, protein:20, carbs:9, fat:4, fiber:0, iron:0.1, calcium:230, vitD:0, vitB12:1.3, vitC:0, vitA:30, vitE:0, vitK:0, folate:15, vitB6:0.1, magnesium:20, zinc:1, potassium:240, sodium:65, selenium:15},
+  {name:'Paneer (100g)', keywords:['paneer','cottage cheese'], kcal:265, protein:18.3, carbs:3.4, fat:20.8, fiber:0, iron:0.2, calcium:208, vitD:0, vitB12:0.3, vitC:0, vitA:180, vitE:0.3, vitK:2, folate:20, vitB6:0.05, magnesium:20, zinc:1.1, potassium:110, sodium:20, selenium:8},
+  {name:'Cheese slice (1 slice)', keywords:['cheese','cheese slice'], kcal:70, protein:4, carbs:0.5, fat:5.5, fiber:0, iron:0.1, calcium:150, vitD:0.2, vitB12:0.2, vitC:0, vitA:60, vitE:0.1, vitK:2, folate:5, vitB6:0.02, magnesium:6, zinc:0.7, potassium:25, sodium:260, selenium:4},
+  {name:'Buttermilk / chaas (1 glass)', keywords:['buttermilk','chaas'], kcal:40, protein:2, carbs:4, fat:1.5, fiber:0, iron:0.1, calcium:90, vitD:0, vitB12:0.2, vitC:0, vitA:10, vitE:0, vitK:0, folate:5, vitB6:0.05, magnesium:8, zinc:0.4, potassium:100, sodium:100, selenium:2},
+  {name:'Lassi, sweet (1 glass)', keywords:['lassi'], kcal:180, protein:5, carbs:28, fat:5, fiber:0, iron:0.1, calcium:150, vitD:0, vitB12:0.3, vitC:1, vitA:40, vitE:0.1, vitK:0, folate:10, vitB6:0.05, magnesium:15, zinc:0.7, potassium:180, sodium:60, selenium:3},
+  {name:'Ghee (1 tbsp)', keywords:['ghee','clarified butter'], kcal:112, protein:0, carbs:0, fat:12.7, fiber:0, iron:0, calcium:0, vitD:0, vitB12:0, vitC:0, vitA:95, vitE:0.4, vitK:0, folate:0, vitB6:0, magnesium:0, zinc:0, potassium:0, sodium:0, selenium:0},
+  {name:'Butter (1 tbsp)', keywords:['butter'], kcal:102, protein:0.1, carbs:0, fat:11.5, fiber:0, iron:0, calcium:3, vitD:0.1, vitB12:0, vitC:0, vitA:97, vitE:0.3, vitK:1, folate:0, vitB6:0, magnesium:0, zinc:0, potassium:3, sodium:82, selenium:0},
+
+  // Fruits
+  {name:'Banana (1 medium)', keywords:['banana'], kcal:105, protein:1.3, carbs:27, fat:0.4, fiber:3.1, iron:0.3, calcium:6, vitD:0, vitB12:0, vitC:10.3, vitA:4, vitE:0.1, vitK:0.6, folate:24, vitB6:0.4, magnesium:32, zinc:0.2, potassium:422, sodium:1, selenium:1},
+  {name:'Orange (1 medium)', keywords:['orange'], kcal:62, protein:1.2, carbs:15.4, fat:0.2, fiber:3.1, iron:0.1, calcium:52, vitD:0, vitB12:0, vitC:70, vitA:14, vitE:0.2, vitK:0, folate:40, vitB6:0.1, magnesium:13, zinc:0.1, potassium:237, sodium:0, selenium:0.7},
+  {name:'Apple (1 medium)', keywords:['apple'], kcal:95, protein:0.5, carbs:25, fat:0.3, fiber:4.4, iron:0.2, calcium:11, vitD:0, vitB12:0, vitC:8.4, vitA:5, vitE:0.3, vitK:3, folate:4, vitB6:0.05, magnesium:9, zinc:0.05, potassium:195, sodium:2, selenium:0},
+  {name:'Mango (1 medium)', keywords:['mango'], kcal:202, protein:2.8, carbs:50, fat:1.3, fiber:5.4, iron:0.4, calcium:21, vitD:0, vitB12:0, vitC:122, vitA:90, vitE:1.5, vitK:7, folate:71, vitB6:0.2, magnesium:18, zinc:0.2, potassium:277, sodium:3, selenium:1},
+  {name:'Papaya (1 cup)', keywords:['papaya'], kcal:62, protein:0.7, carbs:16, fat:0.4, fiber:2.5, iron:0.3, calcium:34, vitD:0, vitB12:0, vitC:87, vitA:60, vitE:1.4, vitK:5, folate:53, vitB6:0.05, magnesium:21, zinc:0.1, potassium:360, sodium:5, selenium:1},
+  {name:'Grapes (1 cup)', keywords:['grapes'], kcal:104, protein:1.1, carbs:27, fat:0.2, fiber:1.4, iron:0.5, calcium:15, vitD:0, vitB12:0, vitC:4.8, vitA:5, vitE:0.2, vitK:15, folate:4, vitB6:0.1, magnesium:8, zinc:0.1, potassium:176, sodium:3, selenium:0.2},
+  {name:'Watermelon (1 cup)', keywords:['watermelon'], kcal:46, protein:0.9, carbs:11.5, fat:0.2, fiber:0.6, iron:0.4, calcium:11, vitD:0, vitB12:0, vitC:12.3, vitA:43, vitE:0.1, vitK:0.1, folate:5, vitB6:0.05, magnesium:15, zinc:0.1, potassium:170, sodium:2, selenium:0.4},
+  {name:'Pomegranate (1 cup)', keywords:['pomegranate','anar'], kcal:144, protein:3, carbs:33, fat:2, fiber:7, iron:0.5, calcium:28, vitD:0, vitB12:0, vitC:18, vitA:0, vitE:0.6, vitK:16, folate:61, vitB6:0.2, magnesium:22, zinc:0.6, potassium:411, sodium:5, selenium:0.5},
+  {name:'Pineapple (1 cup)', keywords:['pineapple'], kcal:82, protein:0.9, carbs:22, fat:0.2, fiber:2.3, iron:0.5, calcium:21, vitD:0, vitB12:0, vitC:79, vitA:3, vitE:0.1, vitK:1, folate:30, vitB6:0.1, magnesium:20, zinc:0.2, potassium:180, sodium:2, selenium:0.1},
+  {name:'Guava (1 medium)', keywords:['guava'], kcal:37, protein:1.4, carbs:8, fat:0.5, fiber:3, iron:0.1, calcium:18, vitD:0, vitB12:0, vitC:125, vitA:31, vitE:0.7, vitK:3, folate:49, vitB6:0.1, magnesium:22, zinc:0.2, potassium:417, sodium:2, selenium:0.6},
+  {name:'Avocado (half)', keywords:['avocado'], kcal:120, protein:1.5, carbs:6.4, fat:11, fiber:5, iron:0.3, calcium:6, vitD:0, vitB12:0, vitC:5, vitA:7, vitE:2, vitK:21, folate:60, vitB6:0.2, magnesium:29, zinc:0.6, potassium:487, sodium:5, selenium:0.4},
+  {name:'Dates (2 pieces)', keywords:['dates'], kcal:40, protein:0.4, carbs:11, fat:0.03, fiber:1.2, iron:0.2, calcium:8, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.02, vitK:0.2, folate:3, vitB6:0.05, magnesium:8, zinc:0.1, potassium:90, sodium:0.4, selenium:0.2},
+  {name:'Raisins (28g)', keywords:['raisins','kishmish'], kcal:85, protein:0.9, carbs:22, fat:0.1, fiber:1, iron:0.5, calcium:14, vitD:0, vitB12:0, vitC:0.7, vitA:0, vitE:0.03, vitK:1, folate:1, vitB6:0.08, magnesium:10, zinc:0.1, potassium:212, sodium:3, selenium:0.7},
+
+  // Vegetables
+  {name:'Spinach, cooked (1 cup)', keywords:['spinach','palak'], kcal:41, protein:5.3, carbs:6.8, fat:0.5, fiber:4.3, iron:6.4, calcium:245, vitD:0, vitB12:0, vitC:17.6, vitA:573, vitE:2, vitK:494, folate:131, vitB6:0.2, magnesium:78, zinc:1, potassium:419, sodium:70, selenium:1.5},
+  {name:'Potato, boiled (1 medium)', keywords:['potato','aloo','boiled potato'], kcal:130, protein:2.7, carbs:30, fat:0.1, fiber:2.4, iron:0.6, calcium:8, vitD:0, vitB12:0, vitC:13, vitA:0, vitE:0.1, vitK:3, folate:15, vitB6:0.3, magnesium:22, zinc:0.4, potassium:515, sodium:5, selenium:0.4},
+  {name:'Sweet potato, boiled (1 medium)', keywords:['sweet potato','shakarkandi'], kcal:112, protein:2, carbs:26, fat:0.1, fiber:3.9, iron:0.7, calcium:38, vitD:0, vitB12:0, vitC:22, vitA:960, vitE:0.3, vitK:2, folate:6, vitB6:0.2, magnesium:27, zinc:0.3, potassium:448, sodium:41, selenium:0.3},
+  {name:'Cauliflower, cooked (1 cup)', keywords:['cauliflower','gobi'], kcal:29, protein:2.3, carbs:5.3, fat:0.3, fiber:2.9, iron:0.4, calcium:22, vitD:0, vitB12:0, vitC:55, vitA:0, vitE:0.1, vitK:17, folate:55, vitB6:0.2, magnesium:12, zinc:0.3, potassium:176, sodium:15, selenium:0.5},
+  {name:'Cabbage, cooked (1 cup)', keywords:['cabbage','patta gobi'], kcal:33, protein:1.9, carbs:7.7, fat:0.2, fiber:3.2, iron:0.3, calcium:63, vitD:0, vitB12:0, vitC:33, vitA:6, vitE:0.1, vitK:82, folate:21, vitB6:0.1, magnesium:11, zinc:0.2, potassium:145, sodium:8, selenium:0.3},
+  {name:'Carrot, raw (1 medium)', keywords:['carrot','gajar'], kcal:25, protein:0.6, carbs:6, fat:0.1, fiber:1.7, iron:0.2, calcium:20, vitD:0, vitB12:0, vitC:3.6, vitA:509, vitE:0.4, vitK:8, folate:15, vitB6:0.1, magnesium:7, zinc:0.1, potassium:195, sodium:42, selenium:0.1},
+  {name:'Tomato (1 medium)', keywords:['tomato'], kcal:22, protein:1.1, carbs:4.8, fat:0.2, fiber:1.5, iron:0.3, calcium:12, vitD:0, vitB12:0, vitC:17, vitA:42, vitE:0.4, vitK:8, folate:15, vitB6:0.1, magnesium:8, zinc:0.1, potassium:215, sodium:6, selenium:0},
+  {name:'Cucumber (1 cup)', keywords:['cucumber'], kcal:16, protein:0.7, carbs:3.8, fat:0.1, fiber:0.5, iron:0.3, calcium:16, vitD:0, vitB12:0, vitC:4, vitA:5, vitE:0.03, vitK:8, folate:7, vitB6:0.03, magnesium:12, zinc:0.2, potassium:152, sodium:2, selenium:0},
+  {name:'Okra, cooked (1 cup)', keywords:['okra','bhindi','ladyfinger'], kcal:35, protein:2, carbs:7.5, fat:0.2, fiber:3.2, iron:0.5, calcium:82, vitD:0, vitB12:0, vitC:21, vitA:36, vitE:0.4, vitK:32, folate:88, vitB6:0.2, magnesium:57, zinc:0.6, potassium:299, sodium:6, selenium:0.7},
+  {name:'Eggplant curry (1 cup)', keywords:['eggplant','brinjal','baingan','aubergine'], kcal:90, protein:2, carbs:12, fat:4, fiber:4, iron:0.5, calcium:20, vitD:0, vitB12:0, vitC:3, vitA:5, vitE:0.4, vitK:3, folate:15, vitB6:0.1, magnesium:15, zinc:0.2, potassium:180, sodium:320, selenium:0.5},
+  {name:'Green peas, cooked (1 cup)', keywords:['peas','green peas','matar'], kcal:134, protein:8.6, carbs:25, fat:0.4, fiber:8.8, iron:2.5, calcium:43, vitD:0, vitB12:0, vitC:58, vitA:63, vitE:0.2, vitK:36, folate:101, vitB6:0.2, magnesium:62, zinc:1.9, potassium:434, sodium:8, selenium:3},
+  {name:'Mushroom, cooked (1 cup)', keywords:['mushroom'], kcal:44, protein:3.4, carbs:8, fat:0.6, fiber:3, iron:2.7, calcium:3, vitD:0.4, vitB12:0.1, vitC:0, vitA:0, vitE:0, vitK:0, folate:20, vitB6:0.1, magnesium:9, zinc:0.7, potassium:356, sodium:4, selenium:12},
+  {name:'Bell pepper / capsicum (1 cup)', keywords:['capsicum','bell pepper','shimla mirch'], kcal:30, protein:1, carbs:7, fat:0.3, fiber:2.5, iron:0.4, calcium:10, vitD:0, vitB12:0, vitC:120, vitA:46, vitE:1.6, vitK:6, folate:27, vitB6:0.3, magnesium:12, zinc:0.3, potassium:250, sodium:4, selenium:0.1},
+  {name:'Onion, cooked (1/2 cup)', keywords:['onion'], kcal:46, protein:1.1, carbs:11, fat:0.1, fiber:1.5, iron:0.2, calcium:16, vitD:0, vitB12:0, vitC:6, vitA:0, vitE:0.02, vitK:0.4, folate:15, vitB6:0.1, magnesium:6, zinc:0.2, potassium:87, sodium:2, selenium:0.4},
+
+  // Nuts & seeds
+  {name:'Almonds (28g, ~23 nuts)', keywords:['almonds','almond','badam'], kcal:164, protein:6, carbs:6.1, fat:14.2, fiber:3.5, iron:1.0, calcium:76, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:7.3, vitK:0, folate:14, vitB6:0.04, magnesium:76, zinc:0.9, potassium:208, sodium:0, selenium:1},
+  {name:'Peanuts (28g)', keywords:['peanuts','groundnuts','moongphali'], kcal:161, protein:7.3, carbs:4.6, fat:14, fiber:2.4, iron:1.3, calcium:26, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:2.2, vitK:0, folate:68, vitB6:0.1, magnesium:48, zinc:0.9, potassium:187, sodium:5, selenium:1.5},
+  {name:'Cashews (28g)', keywords:['cashews','cashew nuts','kaju'], kcal:157, protein:5.2, carbs:8.6, fat:12.4, fiber:0.9, iron:1.9, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:9, folate:7, vitB6:0.1, magnesium:74, zinc:1.6, potassium:187, sodium:3, selenium:3},
+  {name:'Walnuts (28g)', keywords:['walnuts','akhrot'], kcal:185, protein:4.3, carbs:3.9, fat:18.5, fiber:1.9, iron:0.8, calcium:28, vitD:0, vitB12:0, vitC:1.3, vitA:0, vitE:0.2, vitK:0, folate:28, vitB6:0.2, magnesium:45, zinc:0.9, potassium:125, sodium:1, selenium:1.4},
+  {name:'Peanut butter (1 tbsp)', keywords:['peanut butter'], kcal:94, protein:3.6, carbs:3.1, fat:8, fiber:1, iron:0.3, calcium:6, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:1.3, vitK:0, folate:12, vitB6:0.05, magnesium:25, zinc:0.4, potassium:100, sodium:70, selenium:0.9},
+  {name:'Chia seeds (1 tbsp)', keywords:['chia seeds','chia'], kcal:58, protein:2, carbs:5, fat:3.7, fiber:4.1, iron:0.9, calcium:63, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:0, folate:8, vitB6:0.02, magnesium:40, zinc:0.5, potassium:44, sodium:2, selenium:6},
+  {name:'Flaxseed (1 tbsp)', keywords:['flaxseed','flax seeds'], kcal:55, protein:1.9, carbs:3, fat:4.3, fiber:2.8, iron:0.6, calcium:18, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:5, vitB6:0.02, magnesium:27, zinc:0.4, potassium:57, sodium:3, selenium:0.8},
+
+  // Mixed dishes & snacks
+  {name:'Samosa (1 piece)', keywords:['samosa'], kcal:260, protein:4, carbs:30, fat:14, fiber:2, iron:1.2, calcium:20, vitD:0, vitB12:0, vitC:2, vitA:15, vitE:1, vitK:5, folate:20, vitB6:0.1, magnesium:15, zinc:0.5, potassium:200, sodium:420, selenium:3},
+  {name:'Pakora (5 pieces)', keywords:['pakora','bhajji','bhaji'], kcal:220, protein:5, carbs:22, fat:13, fiber:2, iron:1, calcium:15, vitD:0, vitB12:0, vitC:2, vitA:10, vitE:1.5, vitK:3, folate:25, vitB6:0.1, magnesium:20, zinc:0.6, potassium:180, sodium:380, selenium:3},
+  {name:'Vada (1 piece)', keywords:['vada','medu vada'], kcal:130, protein:4, carbs:15, fat:6, fiber:1.5, iron:0.8, calcium:15, vitD:0, vitB12:0, vitC:1, vitA:5, vitE:1, vitK:1, folate:30, vitB6:0.1, magnesium:25, zinc:0.7, potassium:150, sodium:300, selenium:4},
+  {name:'Biryani, chicken (1 plate)', keywords:['chicken biryani','biryani'], kcal:400, protein:20, carbs:45, fat:15, fiber:2, iron:2.5, calcium:40, vitD:0, vitB12:0.4, vitC:3, vitA:60, vitE:1.5, vitK:5, folate:30, vitB6:0.4, magnesium:40, zinc:1.5, potassium:350, sodium:620, selenium:15},
+  {name:'Biryani, vegetable (1 plate)', keywords:['veg biryani','vegetable biryani'], kcal:350, protein:8, carbs:55, fat:12, fiber:4, iron:2, calcium:35, vitD:0, vitB12:0, vitC:5, vitA:80, vitE:1.5, vitK:8, folate:40, vitB6:0.2, magnesium:35, zinc:1, potassium:280, sodium:580, selenium:5},
+  {name:'Pulao (1 cup)', keywords:['pulao','pilaf'], kcal:260, protein:5, carbs:45, fat:6, fiber:2, iron:1.5, calcium:20, vitD:0, vitB12:0, vitC:2, vitA:30, vitE:1, vitK:5, folate:20, vitB6:0.15, magnesium:25, zinc:0.8, potassium:150, sodium:480, selenium:8},
+  {name:'Fried rice (1 cup)', keywords:['fried rice'], kcal:280, protein:6, carbs:45, fat:9, fiber:2, iron:1.5, calcium:20, vitD:0, vitB12:0, vitC:5, vitA:40, vitE:1.5, vitK:10, folate:25, vitB6:0.2, magnesium:25, zinc:1, potassium:180, sodium:550, selenium:8},
+  {name:'Pizza (1 slice)', keywords:['pizza'], kcal:285, protein:12, carbs:36, fat:10, fiber:2.5, iron:2, calcium:190, vitD:0, vitB12:0.5, vitC:2, vitA:90, vitE:0.7, vitK:2, folate:25, vitB6:0.1, magnesium:20, zinc:1.5, potassium:180, sodium:640, selenium:15},
+  {name:'Burger (1 regular)', keywords:['burger'], kcal:350, protein:15, carbs:40, fat:15, fiber:3, iron:2.5, calcium:100, vitD:0, vitB12:0.5, vitC:3, vitA:30, vitE:1, vitK:5, folate:60, vitB6:0.2, magnesium:30, zinc:3, potassium:300, sodium:700, selenium:15},
+  {name:'Sandwich, vegetable (2 slices)', keywords:['sandwich','veg sandwich'], kcal:250, protein:8, carbs:35, fat:8, fiber:3, iron:1.5, calcium:60, vitD:0, vitB12:0, vitC:8, vitA:40, vitE:1, vitK:15, folate:40, vitB6:0.1, magnesium:25, zinc:0.6, potassium:200, sodium:480, selenium:8},
+  {name:'French fries (1 medium serving)', keywords:['french fries','fries','chips'], kcal:320, protein:3.4, carbs:43, fat:15, fiber:3.8, iron:0.8, calcium:15, vitD:0, vitB12:0, vitC:12, vitA:0, vitE:2, vitK:8, folate:25, vitB6:0.3, magnesium:30, zinc:0.5, potassium:580, sodium:210, selenium:0.5},
+  {name:'Momos (6 pieces)', keywords:['momos','momo'], kcal:220, protein:8, carbs:32, fat:6, fiber:2, iron:1.5, calcium:30, vitD:0, vitB12:0.2, vitC:2, vitA:10, vitE:0.5, vitK:3, folate:20, vitB6:0.1, magnesium:20, zinc:1, potassium:150, sodium:420, selenium:5},
+  {name:'Vegetable soup (1 cup)', keywords:['vegetable soup','soup'], kcal:90, protein:3, carbs:15, fat:2, fiber:3, iron:1, calcium:30, vitD:0, vitB12:0, vitC:15, vitA:250, vitE:0.5, vitK:10, folate:20, vitB6:0.1, magnesium:15, zinc:0.3, potassium:200, sodium:480, selenium:1},
+  {name:'Salad, mixed vegetable (1 cup)', keywords:['salad','veg salad'], kcal:45, protein:2, carbs:8, fat:0.5, fiber:3, iron:0.8, calcium:30, vitD:0, vitB12:0, vitC:25, vitA:200, vitE:1, vitK:40, folate:40, vitB6:0.1, magnesium:15, zinc:0.3, potassium:250, sodium:30, selenium:0.5},
+  {name:'Pav bhaji (1 plate)', keywords:['pav bhaji'], kcal:400, protein:9, carbs:55, fat:16, fiber:6, iron:2.5, calcium:80, vitD:0, vitB12:0, vitC:25, vitA:400, vitE:1.5, vitK:15, folate:50, vitB6:0.3, magnesium:40, zinc:1.2, potassium:500, sodium:780, selenium:5},
+  {name:'Vada pav (1 piece)', keywords:['vada pav'], kcal:290, protein:6, carbs:40, fat:12, fiber:3, iron:1.5, calcium:30, vitD:0, vitB12:0, vitC:5, vitA:20, vitE:1, vitK:3, folate:30, vitB6:0.1, magnesium:25, zinc:0.7, potassium:200, sodium:480, selenium:4},
+  {name:'Dhokla (2 pieces)', keywords:['dhokla'], kcal:160, protein:6, carbs:26, fat:4, fiber:2, iron:1.5, calcium:25, vitD:0, vitB12:0, vitC:2, vitA:10, vitE:0.5, vitK:2, folate:40, vitB6:0.1, magnesium:25, zinc:0.7, potassium:150, sodium:350, selenium:5},
+  {name:'Papad, roasted (1 piece)', keywords:['papad'], kcal:40, protein:2.5, carbs:6, fat:0.5, fiber:1, iron:0.8, calcium:8, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:5, vitB6:0.03, magnesium:15, zinc:0.4, potassium:90, sodium:320, selenium:2},
+  {name:'Bhel puri (1 cup)', keywords:['bhel puri','bhel'], kcal:250, protein:6, carbs:40, fat:8, fiber:4, iron:1.5, calcium:30, vitD:0, vitB12:0, vitC:8, vitA:30, vitE:1, vitK:5, folate:30, vitB6:0.15, magnesium:30, zinc:0.8, potassium:250, sodium:520, selenium:3},
+  {name:'Sattu drink (1 glass)', keywords:['sattu'], kcal:150, protein:8, carbs:22, fat:3, fiber:5, iron:3, calcium:30, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.2, vitK:0, folate:60, vitB6:0.2, magnesium:60, zinc:1.5, potassium:300, sodium:10, selenium:5},
+  {name:'Idiyappam (1 cup)', keywords:['idiyappam','string hoppers'], kcal:150, protein:3, carbs:33, fat:0.5, fiber:1, iron:0.8, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.1, vitK:0, folate:5, vitB6:0.05, magnesium:15, zinc:0.4, potassium:40, sodium:200, selenium:5},
+  {name:'Appam (1 piece)', keywords:['appam'], kcal:120, protein:2, carbs:22, fat:2.5, fiber:0.5, iron:0.5, calcium:8, vitD:0, vitB12:0, vitC:0, vitA:5, vitE:0.2, vitK:0, folate:5, vitB6:0.03, magnesium:10, zinc:0.3, potassium:35, sodium:180, selenium:4},
+  {name:'Semiya / vermicelli upma (1 cup)', keywords:['semiya','vermicelli'], kcal:190, protein:4, carbs:32, fat:5, fiber:1.5, iron:1, calcium:20, vitD:0, vitB12:0, vitC:3, vitA:30, vitE:0.8, vitK:3, folate:15, vitB6:0.1, magnesium:20, zinc:0.6, potassium:100, sodium:300, selenium:5},
+  {name:'Poori (1 piece)', keywords:['poori','puri'], kcal:100, protein:2, carbs:12, fat:5, fiber:1, iron:0.6, calcium:5, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.5, vitK:1, folate:5, vitB6:0.03, magnesium:10, zinc:0.3, potassium:30, sodium:100, selenium:4},
+  {name:'Sabudana khichdi (1 cup)', keywords:['sabudana'], kcal:250, protein:3, carbs:45, fat:7, fiber:1.5, iron:1, calcium:20, vitD:0, vitB12:0, vitC:5, vitA:20, vitE:1, vitK:2, folate:8, vitB6:0.1, magnesium:20, zinc:0.5, potassium:150, sodium:280, selenium:2},
+
+  // Sweets & desserts
+  {name:'Ice cream (1 scoop)', keywords:['ice cream'], kcal:145, protein:2.5, carbs:17, fat:8, fiber:0.5, iron:0.1, calcium:90, vitD:0, vitB12:0.2, vitC:0, vitA:45, vitE:0.2, vitK:0.5, folate:5, vitB6:0.03, magnesium:8, zinc:0.4, potassium:130, sodium:53, selenium:1.5},
+  {name:'Chocolate bar (40g)', keywords:['chocolate','chocolate bar'], kcal:210, protein:3, carbs:24, fat:12, fiber:1.5, iron:1.5, calcium:60, vitD:0, vitB12:0, vitC:0, vitA:10, vitE:0.5, vitK:3, folate:3, vitB6:0.03, magnesium:45, zinc:0.6, potassium:150, sodium:30, selenium:2},
+  {name:'Biscuit / cookie (2 pieces)', keywords:['biscuit','cookie','cookies'], kcal:140, protein:2, carbs:20, fat:6, fiber:0.5, iron:0.6, calcium:10, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0.3, vitK:2, folate:10, vitB6:0.02, magnesium:6, zinc:0.2, potassium:40, sodium:90, selenium:3},
+  {name:'Cake, slice (1 piece)', keywords:['cake'], kcal:300, protein:4, carbs:45, fat:12, fiber:1, iron:1, calcium:40, vitD:0, vitB12:0.1, vitC:0, vitA:30, vitE:0.5, vitK:2, folate:15, vitB6:0.03, magnesium:8, zinc:0.3, potassium:60, sodium:220, selenium:5},
+  {name:'Gulab jamun (2 pieces)', keywords:['gulab jamun'], kcal:300, protein:4, carbs:45, fat:12, fiber:0.5, iron:0.5, calcium:60, vitD:0, vitB12:0, vitC:0, vitA:20, vitE:0.3, vitK:0.5, folate:5, vitB6:0.02, magnesium:10, zinc:0.3, potassium:80, sodium:90, selenium:3},
+  {name:'Jalebi (2 pieces)', keywords:['jalebi'], kcal:250, protein:2, carbs:45, fat:8, fiber:0.3, iron:0.4, calcium:20, vitD:0, vitB12:0, vitC:0, vitA:5, vitE:0.2, vitK:0.5, folate:3, vitB6:0.01, magnesium:5, zinc:0.1, potassium:30, sodium:40, selenium:1},
+  {name:'Ladoo (1 piece)', keywords:['ladoo','laddu'], kcal:180, protein:3, carbs:22, fat:9, fiber:1, iron:0.8, calcium:30, vitD:0, vitB12:0, vitC:0, vitA:15, vitE:0.5, vitK:0.5, folate:5, vitB6:0.02, magnesium:15, zinc:0.4, potassium:70, sodium:30, selenium:2},
+  {name:'Halwa (1 cup)', keywords:['halwa'], kcal:320, protein:5, carbs:45, fat:14, fiber:1.5, iron:1.5, calcium:60, vitD:0, vitB12:0, vitC:0, vitA:40, vitE:0.6, vitK:1, folate:8, vitB6:0.03, magnesium:12, zinc:0.4, potassium:90, sodium:50, selenium:2},
+  {name:'Kheer / payasam (1 cup)', keywords:['kheer','payasam'], kcal:210, protein:6, carbs:32, fat:6, fiber:0.5, iron:0.3, calcium:150, vitD:0, vitB12:0.2, vitC:0, vitA:60, vitE:0.3, vitK:0.5, folate:10, vitB6:0.03, magnesium:15, zinc:0.4, potassium:150, sodium:60, selenium:3},
+
+  // Beverages
+  {name:'Tea with milk (1 cup)', keywords:['tea','chai'], kcal:60, protein:1.5, carbs:8, fat:2.5, fiber:0, iron:0, calcium:40, vitD:0, vitB12:0, vitC:0, vitA:15, vitE:0, vitK:0, folate:3, vitB6:0.01, magnesium:5, zinc:0.2, potassium:60, sodium:10, selenium:1},
+  {name:'Coffee with milk (1 cup)', keywords:['coffee'], kcal:55, protein:1.8, carbs:6, fat:2.3, fiber:0, iron:0, calcium:45, vitD:0, vitB12:0, vitC:0, vitA:12, vitE:0, vitK:0, folate:2, vitB6:0.01, magnesium:5, zinc:0.2, potassium:55, sodium:8, selenium:1},
+  {name:'Green tea (1 cup)', keywords:['green tea'], kcal:2, protein:0, carbs:0.5, fat:0, fiber:0, iron:0, calcium:0, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0, vitK:0, folate:0, vitB6:0, magnesium:1, zinc:0, potassium:8, sodium:1, selenium:0},
+  {name:'Coconut water (1 cup)', keywords:['coconut water'], kcal:46, protein:1.7, carbs:9, fat:0.5, fiber:2.6, iron:0.7, calcium:58, vitD:0, vitB12:0, vitC:5.8, vitA:0, vitE:0, vitK:0, folate:6, vitB6:0.03, magnesium:15, zinc:0.2, potassium:250, sodium:105, selenium:0.5},
+  {name:'Cola / soda (1 can)', keywords:['cola','soda','soft drink'], kcal:140, protein:0, carbs:39, fat:0, fiber:0, iron:0, calcium:0, vitD:0, vitB12:0, vitC:0, vitA:0, vitE:0, vitK:0, folate:0, vitB6:0, magnesium:0, zinc:0, potassium:0, sodium:15, selenium:0},
+  {name:'Protein shake, whey (1 scoop)', keywords:['protein shake','whey','whey protein'], kcal:120, protein:24, carbs:3, fat:1.5, fiber:0, iron:0.5, calcium:130, vitD:0, vitB12:0.5, vitC:0, vitA:0, vitE:0, vitK:0, folate:5, vitB6:0.1, magnesium:20, zinc:1, potassium:180, sodium:120, selenium:5},
+];
+
+const foodInput = document.getElementById('foodInput');
+const foodDatalist = document.getElementById('foodDatalist');
+FOODS.forEach(f=>{
+  const o = document.createElement('option');
+  o.value = f.name;
+  foodDatalist.appendChild(o);
+});
+
+// ---------- State ----------
+function toDateStr(d){
+  const off = d.getTimezoneOffset();
+  return new Date(d.getTime() - off*60000).toISOString().slice(0,10);
+}
+const TODAY_STR = toDateStr(new Date());
+
+const state = { allLogs: {}, currentDate: TODAY_STR, targets: {}, wearables: {} };
+
+const hasStorage = typeof window.storage !== 'undefined' && window.storage !== null;
+
+function currentEntries(){
+  if(!state.allLogs[state.currentDate]) state.allLogs[state.currentDate] = [];
+  return state.allLogs[state.currentDate];
+}
+
+async function loadAllLogs(){
+  if(!hasStorage) return;
+  try{
+    const res = await window.storage.get('diet-log');
+    if(res && res.value) state.allLogs = JSON.parse(res.value);
+  } catch(e){
+    // no saved history yet — start fresh
+    state.allLogs = state.allLogs || {};
+  }
+  renderLog();
+  renderGaps();
+  renderStreakBanner();
+}
+
+let saveTimer = null;
+function persist(){
+  renderStreakBanner();
+  if(!hasStorage){
+    setSaveStatus('Not saved — history only lasts this session. Open this inside Claude.ai to save across visits.', true);
+    return;
+  }
+  setSaveStatus('Saving…');
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(async ()=>{
+    try{
+      await window.storage.set('diet-log', JSON.stringify(state.allLogs));
+      setSaveStatus('Saved');
+    } catch(e){
+      setSaveStatus("Couldn't save — changes are only kept for this session.", true);
+    }
+  }, 300);
+}
+function setSaveStatus(msg, isError){
+  const el = document.getElementById('saveStatus');
+  if(!el) return;
+  el.textContent = msg;
+  el.style.color = isError ? 'var(--rust)' : 'var(--ink-faint)';
+}
+
+// ---------- Streaks ----------
+function computeStreak(){
+  const logged = new Set(Object.keys(state.allLogs).filter(d=>(state.allLogs[d]||[]).length>0));
+  if(logged.size===0) return {current:0, best:0, loggedToday:false};
+  const loggedToday = logged.has(TODAY_STR);
+  let current = 0;
+  let cursor = new Date();
+  if(!loggedToday) cursor.setDate(cursor.getDate()-1);
+  while(logged.has(toDateStr(cursor))){
+    current++;
+    cursor.setDate(cursor.getDate()-1);
+  }
+  const sortedDates = Array.from(logged).sort();
+  let best=0, run=0, prev=null;
+  sortedDates.forEach(d=>{
+    if(prev){
+      const diffDays = Math.round((new Date(d) - new Date(prev))/86400000);
+      run = diffDays===1 ? run+1 : 1;
+    } else run=1;
+    best = Math.max(best, run);
+    prev = d;
+  });
+  return {current, best, loggedToday};
+}
+
+function renderStreakBanner(){
+  const el = document.getElementById('streakBanner');
+  if(!el) return;
+  const s = computeStreak();
+  if(s.current === 0){
+    el.innerHTML = 'Log today to start a streak.';
+  } else {
+    el.innerHTML = `<span class="streak-pill">🔥 ${s.current}-day streak</span>` +
+      (s.loggedToday ? '' : ' — log today to keep it going') +
+      (s.best > s.current ? ` · best: ${s.best} days` : '');
+  }
+}
+
+// ---------- Voice / text capture ----------
+// Best-effort keyword matcher against each food's own keyword list — a
+// production build would send the transcript to Claude with the full food
+// database as context instead of this fixed matcher, which will always miss
+// dishes and phrasing outside its demo list.
+function escapeRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+
+function findFoodMatch(phraseLower){
+  let best = null, bestLen = 0;
+  FOODS.forEach(f=>{
+    f.keywords.forEach(kw=>{
+      const re = new RegExp('\\b'+escapeRe(kw)+'\\b','i');
+      if(re.test(phraseLower) && kw.length > bestLen){ best = f; bestLen = kw.length; }
+    });
+  });
+  return best;
+}
+
+const WORD_NUMBERS = {a:1, an:1, one:1, two:2, three:3, four:4, five:5, six:6, half:0.5, couple:2, few:3};
+const MEAL_KEYWORDS = [
+  {re:/\bbreakfast\b/i, meal:'breakfast'}, {re:/\blunch\b/i, meal:'lunch'},
+  {re:/\bdinner|supper\b/i, meal:'dinner'}, {re:/\bsnack\b/i, meal:'snack'},
+];
+
+function parsePhrase(raw){
+  let phrase = raw.trim().toLowerCase();
+  if(!phrase) return null;
+  let qty = 1;
+  const numMatch = phrase.match(/^(\d+(\.\d+)?)/);
+  if(numMatch){
+    qty = parseFloat(numMatch[1]);
+    phrase = phrase.slice(numMatch[0].length).trim();
+  } else {
+    for(const [word,val] of Object.entries(WORD_NUMBERS)){
+      if(new RegExp('\\b'+word+'\\b','i').test(phrase)){ qty = val; break; }
+    }
+  }
+  const food = findFoodMatch(phrase);
+  let meal = null;
+  for(const mk of MEAL_KEYWORDS){
+    if(mk.re.test(phrase)){ meal = mk.meal; break; }
+  }
+  return { raw: raw.trim(), qty, food, meal };
+}
+
+function parseTranscript(text){
+  const globalMeal = (MEAL_KEYWORDS.find(mk=>mk.re.test(text))||{}).meal || getSel('mealGroup');
+  const chunks = text.split(/,| and |;/i).map(c=>c.trim()).filter(Boolean);
+  return chunks.map(c=>{
+    const p = parsePhrase(c);
+    if(!p) return null;
+    p.meal = p.meal || globalMeal;
+    return p;
+  }).filter(Boolean);
+}
+
+let pendingParse = [];
+document.getElementById('parseBtn').onclick = ()=>{
+  const text = document.getElementById('voiceText').value;
+  if(!text.trim()) return;
+  pendingParse = parseTranscript(text);
+  renderParseReview();
+};
+
+function renderParseReview(){
+  const wrap = document.getElementById('parseReview');
+  const list = document.getElementById('parseReviewList');
+  if(pendingParse.length===0){ wrap.style.display='none'; return; }
+  wrap.style.display='block';
+  list.innerHTML = pendingParse.map((p,i)=>{
+    if(!p.food){
+      return `<div class="parse-item nomatch">
+        <input type="checkbox" disabled>
+        <span class="pname">Couldn't match a food<span class="praw">"${p.raw}" — try the search box above, or it may be outside this demo's ~90-item database</span></span>
+      </div>`;
+    }
+    return `<div class="parse-item" data-i="${i}">
+      <input type="checkbox" checked>
+      <span class="pname">${p.food.name}<span class="praw">heard: "${p.raw}" · ${MEAL_LABELS[p.meal]}</span></span>
+      <input type="number" class="pqty" value="${p.qty}" min="0.25" step="0.25">
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('confirmParseBtn').onclick = ()=>{
+  document.querySelectorAll('#parseReviewList .parse-item:not(.nomatch)').forEach(row=>{
+    const checkbox = row.querySelector('input[type=checkbox]');
+    if(!checkbox.checked) return;
+    const i = +row.dataset.i;
+    const qty = +row.querySelector('.pqty').value || 1;
+    const p = pendingParse[i];
+    currentEntries().push({...p.food, servings: qty, meal: p.meal, id: Date.now()+Math.random()});
+  });
+  pendingParse = [];
+  document.getElementById('parseReview').style.display = 'none';
+  document.getElementById('voiceText').value = '';
+  persist();
+  renderLog();
+  renderGaps();
+};
+
+// Speech recognition (Web Speech API — Chrome/Edge support only)
+const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+const micBtn = document.getElementById('micBtn');
+const micStatus = document.getElementById('micStatus');
+if(!SpeechRecognition){
+  micBtn.style.display = 'none';
+  document.getElementById('voiceUnsupportedNote').style.display = 'block';
+} else {
+  const recognition = new SpeechRecognition();
+  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.lang = 'en-IN';
+  let listening = false;
+
+  recognition.onresult = (e)=>{
+    let finalText = '';
+    for(let i=0; i<e.results.length; i++){ finalText += e.results[i][0].transcript; }
+    document.getElementById('voiceText').value = finalText;
+  };
+  recognition.onstart = ()=>{
+    listening = true;
+    micBtn.classList.add('recording');
+    micBtn.textContent = '● Listening…';
+    micStatus.textContent = 'Speak naturally, e.g. "two rotis and dal for lunch". Tap again to stop.';
+  };
+  recognition.onend = ()=>{
+    listening = false;
+    micBtn.classList.remove('recording');
+    micBtn.textContent = '🎙️ Speak';
+    micStatus.textContent = document.getElementById('voiceText').value ? 'Review the text below, then parse it.' : '';
+  };
+  recognition.onerror = (e)=>{
+    micStatus.textContent = e.error === 'not-allowed'
+      ? 'Microphone access was blocked — allow it in your browser to use voice input.'
+      : 'Voice capture had a problem — you can type instead.';
+  };
+  micBtn.onclick = ()=>{
+    if(listening){ recognition.stop(); } else { recognition.start(); }
+  };
+}
+
+document.getElementById('addFoodBtn').onclick = ()=>{
+  const hint = document.getElementById('addFoodHint');
+  const typed = foodInput.value.trim();
+  const food = FOODS.find(f=> f.name.toLowerCase() === typed.toLowerCase());
+  if(!food){
+    hint.textContent = typed
+      ? `"${typed}" isn't in this demo's food list yet — pick a suggestion as you type.`
+      : 'Start typing a food name and pick one of the suggestions.';
+    return;
+  }
+  hint.textContent = '';
+  const servings = +document.getElementById('servings').value || 1;
+  const meal = getSel('mealGroup');
+  currentEntries().push({...food, servings, meal, id: Date.now() + Math.random()});
+  foodInput.value = '';
+  persist();
+  renderLog();
+  renderGaps();
+};
+
+const MEAL_LABELS = {breakfast:'Breakfast', lunch:'Lunch', dinner:'Dinner', snack:'Snack'};
+const MEAL_ORDER = ['breakfast','lunch','dinner','snack'];
+
+function renderLog(){
+  const body = document.getElementById('logBody');
+  const empty = document.getElementById('logEmpty');
+  const entries = currentEntries();
+  body.innerHTML = '';
+  if(entries.length===0){ empty.style.display='block'; document.getElementById('logTable').style.display='none'; return; }
+  empty.style.display='none';
+  document.getElementById('logTable').style.display='table';
+
+  let grandKcal = 0;
+  MEAL_ORDER.forEach(meal=>{
+    const mealEntries = entries.filter(e=>e.meal===meal);
+    if(mealEntries.length===0) return;
+
+    const headTr = document.createElement('tr');
+    headTr.className = 'meal-head';
+    headTr.innerHTML = `<td colspan="7">${MEAL_LABELS[meal]}</td>`;
+    body.appendChild(headTr);
+
+    let mealKcal = 0;
+    mealEntries.forEach(entry=>{
+      mealKcal += entry.kcal * entry.servings;
+      const tr = document.createElement('tr');
+      tr.innerHTML = `<td>${entry.name}</td>
+        <td><span class="meal-badge meal-${entry.meal}">${MEAL_LABELS[entry.meal]}</span></td>
+        <td><input type="number" class="pqty edit-servings" value="${entry.servings}" min="0.25" step="0.25" data-id="${entry.id}" style="width:56px; padding:4px 6px; border:1px solid var(--line); border-radius:4px; font-family:inherit; font-size:13px;"></td>
+        <td>${Math.round(entry.kcal*entry.servings)}</td>
+        <td>${(entry.protein*entry.servings).toFixed(1)}g</td>
+        <td>${(entry.carbs*entry.servings).toFixed(1)}g</td>
+        <td>${(entry.fat*entry.servings).toFixed(1)}g</td>
+        <td><button class="rm" title="Remove" data-id="${entry.id}">×</button></td>`;
+      body.appendChild(tr);
+    });
+    grandKcal += mealKcal;
+
+    const subTr = document.createElement('tr');
+    subTr.className = 'meal-total';
+    subTr.innerHTML = `<td colspan="3">${MEAL_LABELS[meal]} total</td><td>${Math.round(mealKcal)} kcal</td><td colspan="3"></td>`;
+    body.appendChild(subTr);
+  });
+
+  const totalTr = document.createElement('tr');
+  totalTr.className = 'grand-total';
+  totalTr.innerHTML = `<td colspan="3">Day total</td><td>${Math.round(grandKcal)} kcal</td><td colspan="3"></td>`;
+  body.appendChild(totalTr);
+
+  body.querySelectorAll('.rm').forEach(btn=>{
+    btn.onclick = ()=>{
+      state.allLogs[state.currentDate] = currentEntries().filter(e=>e.id != btn.dataset.id);
+      persist(); renderLog(); renderGaps();
+    };
+  });
+  body.querySelectorAll('.edit-servings').forEach(inp=>{
+    inp.onchange = ()=>{
+      const entry = currentEntries().find(e=>e.id == inp.dataset.id);
+      if(entry){
+        entry.servings = +inp.value || entry.servings;
+        persist(); renderLog(); renderGaps();
+      }
+    };
+  });
+}
+
+function totals(entries){
+  entries = entries || currentEntries();
+  const t = {kcal:0, protein:0, carbs:0, fat:0, fiber:0, iron:0, calcium:0, vitD:0, vitB12:0, vitC:0,
+    vitA:0, vitE:0, vitK:0, folate:0, vitB6:0, magnesium:0, zinc:0, potassium:0, sodium:0, selenium:0};
+  entries.forEach(e=>{
+    Object.keys(t).forEach(k=> t[k] += (e[k]||0) * e.servings);
+  });
+  return t;
+}
+
+// ---------- Gap rendering ----------
+const macroDefs = [
+  {key:'kcal', label:'Calories', unit:'kcal'},
+  {key:'protein', label:'Protein', unit:'g'},
+  {key:'carbs', label:'Carbohydrates', unit:'g'},
+  {key:'fat', label:'Fat', unit:'g'},
+  {key:'fiber', label:'Fiber', unit:'g'},
+];
+const microDefs = [
+  {key:'iron', label:'Iron', unit:'mg', benefit:'Carries oxygen in your blood — low levels cause fatigue and weakness.'},
+  {key:'calcium', label:'Calcium', unit:'mg', benefit:'Builds and maintains strong bones and teeth; supports muscle and nerve signals.'},
+  {key:'vitD', label:'Vitamin D', unit:'mcg', benefit:"Helps your body absorb calcium; supports bone strength and immune function."},
+  {key:'vitB12', label:'Vitamin B12', unit:'mcg', benefit:'Keeps nerve cells healthy and helps make red blood cells — mainly from animal foods.'},
+  {key:'vitC', label:'Vitamin C', unit:'mg', benefit:'Supports immunity and wound healing; helps your body absorb iron from plant foods.'},
+  {key:'vitA', label:'Vitamin A', unit:'mcg', benefit:'Supports vision in low light and maintains skin and immune function.'},
+  {key:'vitE', label:'Vitamin E', unit:'mg', benefit:'An antioxidant that protects cells from damage; supports skin and immune health.'},
+  {key:'vitK', label:'Vitamin K', unit:'mcg', benefit:'Needed for normal blood clotting and supports bone health.'},
+  {key:'folate', label:'Folate (B9)', unit:'mcg', benefit:'Essential for making new cells — especially important before and during pregnancy.'},
+  {key:'vitB6', label:'Vitamin B6', unit:'mg', benefit:'Supports brain development and helps the body make neurotransmitters.'},
+  {key:'magnesium', label:'Magnesium', unit:'mg', benefit:'Supports muscle and nerve function, blood sugar control, and bone health.'},
+  {key:'zinc', label:'Zinc', unit:'mg', benefit:'Supports immune function and wound healing; needed for taste and smell.'},
+  {key:'potassium', label:'Potassium', unit:'mg', benefit:'Helps regulate fluid balance and blood pressure; supports muscle and nerve signals.'},
+  {key:'sodium', label:'Sodium', unit:'mg', benefit:'Needed in small amounts for fluid balance — most diets have too much, not too little.', type:'limit'},
+  {key:'selenium', label:'Selenium', unit:'mcg', benefit:'An antioxidant that supports thyroid function and helps protect cells from damage.'},
+];
+
+function gapRow(def, consumed, target){
+  const pct = target>0 ? Math.min(150, (consumed/target)*100) : 0;
+  let cls, text;
+  if(def.type === 'limit'){
+    if(consumed > target){ cls='over'; text = '+' + Math.round(consumed-target) + def.unit + ' over limit'; }
+    else { cls='met'; text = 'Within limit'; }
+  } else {
+    const diff = target - consumed;
+    cls = 'met'; text = 'On target';
+    if(diff > target*0.1){ cls='short'; text = '−' + Math.round(diff) + def.unit + ' short'; }
+    else if(diff < -target*0.05){ cls='over'; text = '+' + Math.round(-diff) + def.unit + ' over'; }
+  }
+  const benefitHtml = def.benefit ? `<span class="benefit">${def.benefit}</span>` : '';
+  return `<div class="gap-row">
+    <div class="heads">
+      <div><span class="label">${def.label}</span>${benefitHtml}</div>
+      <span class="delta ${cls}">${text}</span>
+    </div>
+    <div class="track"><div class="fill ${cls}" style="width:${pct}%"></div></div>
+  </div>`;
+}
+
+function friendlyDate(dateStr){
+  if(dateStr === TODAY_STR) return 'today';
+  const d = new Date(dateStr + 'T00:00:00');
+  return d.toLocaleDateString(undefined, {weekday:'short', month:'short', day:'numeric'});
+}
+
+function renderGaps(){
+  const t = totals();
+  const tg = state.targets;
+  if(!tg.kcal) return;
+  document.getElementById('macroGaps').innerHTML = macroDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
+  document.getElementById('microGaps').innerHTML = microDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
+  const label = friendlyDate(state.currentDate);
+  document.getElementById('gapsSubtitle').textContent = `What ${label === 'today' ? "today's" : label + "'s"} diet log covers against your daily target, macro and micro.`;
+  document.getElementById('insightHeading').textContent = `What ${label === 'today' ? "today's" : label + "'s"} log suggests`;
+  renderInsight(t, tg);
+}
+
+// ---------- Rule-based "AI insight" (sample output, no live API call) ----------
+function renderInsight(t, tg){
+  const insightEl = document.getElementById('insightText');
+  const suggEl = document.getElementById('mealSugg');
+  if(currentEntries().length===0){
+    insightEl.textContent = 'Add some food to your log to see an analysis here.';
+    suggEl.innerHTML = '';
+    return;
+  }
+  const allDefs = [...macroDefs, ...microDefs];
+  const shortfalls = allDefs
+    .map(d=>({...d, deficit: tg[d.key] - t[d.key], pctShort: (tg[d.key]-t[d.key])/tg[d.key]}))
+    .filter(d=> d.pctShort > 0.15 && d.key !== 'kcal' && d.type !== 'limit')
+    .sort((a,b)=> b.pctShort - a.pctShort)
+    .slice(0,2);
+
+  const goal = getSel('goalGroup');
+  const goalPhrase = {lose:'fat loss', maintain:'maintaining your weight', gain:'building muscle', manage:'managing your condition'}[goal];
+
+  const sodiumOver = tg.sodium && t.sodium > tg.sodium * 1.1;
+  const sodiumNote = sodiumOver
+    ? ` Sodium is also running high today — about ${Math.round(t.sodium)}mg against a ${tg.sodium}mg guideline — usually a sign of packaged, fried, or heavily salted dishes rather than any single food.`
+    : '';
+
+  if(shortfalls.length===0){
+    insightEl.textContent = `Today's log is well balanced against your targets for ${goalPhrase}.${sodiumOver ? sodiumNote : ' Keep this pattern going and revisit tomorrow\'s log to check consistency.'}`;
+    suggEl.innerHTML = '';
+    return;
+  }
+  const names = shortfalls.map(s=>s.label).join(' and ');
+  insightEl.textContent = `Today's log is running short on ${names}, relative to what your profile needs for ${goalPhrase}. Closing this gap matters most for ${shortfalls[0].label.toLowerCase()}, currently about ${Math.round(shortfalls[0].pctShort*100)}% below target.${sodiumNote}`;
+
+  const richFoodMap = {
+    protein:['Egg, boiled (1 large)','Dal / lentil curry (1 cup)'],
+    fiber:['Dal / lentil curry (1 cup)','Almonds (28g, ~23 nuts)'],
+    iron:['Spinach, cooked (1 cup)','Dal / lentil curry (1 cup)'],
+    calcium:['Ragi porridge (1 cup)','Curd / plain yogurt (1 cup)'],
+    vitD:['Fish, grilled (100g)','Egg, boiled (1 large)'],
+    vitB12:['Curd / plain yogurt (1 cup)','Milk, whole (1 cup)'],
+    vitC:['Guava (1 medium)','Orange (1 medium)'],
+    carbs:['Cooked rice (1 cup)','Whole wheat roti (1 medium)'],
+    fat:['Almonds (28g, ~23 nuts)','Paneer (100g)'],
+    vitA:['Sweet potato, boiled (1 medium)','Carrot, raw (1 medium)'],
+    vitE:['Almonds (28g, ~23 nuts)','Peanut butter (1 tbsp)'],
+    vitK:['Spinach, cooked (1 cup)','Cabbage, cooked (1 cup)'],
+    folate:['Chole / chickpea curry (1 cup)','Spinach, cooked (1 cup)'],
+    vitB6:['Chicken breast, cooked (100g)','Banana (1 medium)'],
+    magnesium:['Quinoa, cooked (1 cup)','Almonds (28g, ~23 nuts)'],
+    zinc:['Mutton curry (1 cup)','Chole / chickpea curry (1 cup)'],
+    potassium:['Banana (1 medium)','Potato, boiled (1 medium)'],
+    selenium:['Fish, grilled (100g)','Mushroom, cooked (1 cup)'],
+  };
+  const suggestions = [];
+  shortfalls.forEach(s=>{
+    (richFoodMap[s.key]||[]).forEach(name=>{
+      if(!suggestions.find(x=>x.name===name)) suggestions.push({name, reason:s.label});
+    });
+  });
+  suggEl.innerHTML = suggestions.slice(0,4).map(s=>{
+    const f = FOODS.find(x=>x.name===s.name);
+    return `<div class="item"><div class="t">${s.name}</div><div class="d">Adds toward your ${s.reason.toLowerCase()} target — ${f.protein}g protein, ${f.fiber}g fiber per serving.</div></div>`;
+  }).join('');
+}
+
+// ---------- Medical mock ----------
+const fileInput = document.getElementById('fileInput');
+const uploadBox = document.getElementById('uploadBox');
+document.getElementById('chooseFileBtn').onclick = ()=> fileInput.click();
+fileInput.onchange = ()=>{
+  if(fileInput.files.length){
+    document.getElementById('uploadPrompt').textContent = 'Selected: ' + fileInput.files[0].name;
+    uploadBox.classList.add('has-file');
+    document.getElementById('analyzeRow').style.display = 'block';
+  }
+};
+document.getElementById('analyzeBtn').onclick = ()=>{
+  document.getElementById('reportOutput').style.display = 'block';
+};
+
+// ---------- Wearables mock ----------
+const WEARABLES = [
+  {name:'Fitbit', icon:'⌚'},
+  {name:'Apple Health', icon:'🍏'},
+  {name:'Garmin', icon:'🛰️'},
+  {name:'Google Fit', icon:'📶'},
+  {name:'Oura', icon:'💍'},
+  {name:'Whoop', icon:'📊'},
+];
+const wGrid = document.getElementById('wearableGrid');
+WEARABLES.forEach(w=>{
+  const div = document.createElement('div');
+  div.className = 'wearable';
+  div.innerHTML = `<div class="icon">${w.icon}</div><div class="name">${w.name}</div><button>Connect</button>`;
+  const btn = div.querySelector('button');
+  btn.onclick = ()=>{
+    const connected = div.classList.toggle('connected');
+    btn.textContent = connected ? 'Connected' : 'Connect';
+    state.wearables[w.name] = connected;
+    const anyConnected = Object.values(state.wearables).some(Boolean);
+    document.getElementById('syncStats').style.display = anyConnected ? 'grid' : 'none';
+  };
+  wGrid.appendChild(div);
+});
+
+// ---------- Date picker (diet log) ----------
+const logDateInput = document.getElementById('logDateInput');
+logDateInput.value = TODAY_STR;
+logDateInput.onchange = ()=>{
+  state.currentDate = logDateInput.value || TODAY_STR;
+  document.getElementById('addFoodHint').textContent = '';
+  renderLog();
+  renderGaps();
+};
+document.getElementById('todayBtn').onclick = ()=>{
+  logDateInput.value = TODAY_STR;
+  state.currentDate = TODAY_STR;
+  renderLog();
+  renderGaps();
+};
+
+// ---------- Trends & history ----------
+function dateRangeArray(startStr, endStr){
+  const out = [];
+  let cursor = new Date(startStr + 'T00:00:00');
+  const end = new Date(endStr + 'T00:00:00');
+  while(cursor <= end){
+    out.push(toDateStr(cursor));
+    cursor.setDate(cursor.getDate()+1);
+  }
+  return out;
+}
+
+document.getElementById('rangeGroup').querySelectorAll('button').forEach(btn=>{
+  btn.onclick = ()=>{
+    document.querySelectorAll('#rangeGroup button').forEach(b=>b.classList.remove('sel'));
+    btn.classList.add('sel');
+    document.getElementById('customRangeRow').style.display = btn.dataset.val === 'custom' ? 'flex' : 'none';
+    renderTrends();
+  };
+});
+(function initCustomRange(){
+  const start = new Date(); start.setDate(start.getDate()-6);
+  document.getElementById('rangeStart').value = toDateStr(start);
+  document.getElementById('rangeEnd').value = TODAY_STR;
+  document.getElementById('rangeStart').onchange = renderTrends;
+  document.getElementById('rangeEnd').onchange = renderTrends;
+})();
+
+function renderTrends(){
+  const rangeSel = getSel('rangeGroup');
+  let dates;
+  if(rangeSel === 'custom'){
+    const s = document.getElementById('rangeStart').value;
+    const e = document.getElementById('rangeEnd').value;
+    if(!s || !e || s > e) return;
+    dates = dateRangeArray(s, e);
+  } else {
+    const days = +rangeSel;
+    const end = new Date();
+    const start = new Date(); start.setDate(start.getDate() - (days-1));
+    dates = dateRangeArray(toDateStr(start), toDateStr(end));
+  }
+
+  const tg = state.targets;
+  const loggedDates = dates.filter(d => (state.allLogs[d]||[]).length > 0);
+  const streak = computeStreak();
+
+  // Stats row
+  let avgPctKcal = 0;
+  if(loggedDates.length){
+    avgPctKcal = loggedDates.reduce((sum,d)=>{
+      const t = totals(state.allLogs[d]);
+      return sum + (tg.kcal ? (t.kcal/tg.kcal*100) : 0);
+    }, 0) / loggedDates.length;
+  }
+  document.getElementById('trendStats').innerHTML = `
+    <div class="outcome-stat"><div class="v">${loggedDates.length}/${dates.length}</div><div class="l">Days logged</div></div>
+    <div class="outcome-stat"><div class="v">${streak.current}</div><div class="l">Current streak</div></div>
+    <div class="outcome-stat"><div class="v">${streak.best}</div><div class="l">Best streak</div></div>
+    <div class="outcome-stat"><div class="v">${loggedDates.length ? Math.round(avgPctKcal)+'%' : '—'}</div><div class="l">Avg. of calorie target</div></div>
+  `;
+
+  // Calorie chart
+  const chart = document.getElementById('trendChart');
+  chart.innerHTML = dates.map(d=>{
+    const entries = state.allLogs[d] || [];
+    if(entries.length===0){
+      return `<div class="trend-bar-wrap" title="${d}: no log">
+        <div class="trend-bar-track"><div class="trend-bar empty" style="height:4%"></div></div>
+        <div class="trend-day-label">${new Date(d+'T00:00:00').getDate()}</div>
+      </div>`;
+    }
+    const t = totals(entries);
+    const pct = tg.kcal ? Math.min(150, (t.kcal/tg.kcal)*100) : 0;
+    const diff = tg.kcal - t.kcal;
+    let cls = 'met';
+    if(diff > tg.kcal*0.15) cls = 'short';
+    else if(diff < -tg.kcal*0.1) cls = 'over';
+    return `<div class="trend-bar-wrap" title="${d}: ${Math.round(t.kcal)} / ${tg.kcal} kcal">
+      <div class="trend-bar-track"><div class="trend-bar ${cls}" style="height:${Math.max(pct,4)}%"></div></div>
+      <div class="trend-day-label">${new Date(d+'T00:00:00').getDate()}</div>
+    </div>`;
+  }).join('');
+  document.getElementById('trendChartNote').textContent = loggedDates.length
+    ? `Teal bars met your calorie target, rust bars ran short, steel bars ran over. Hover a bar for the exact numbers.`
+    : `No entries logged in this period yet.`;
+
+  // Recurring gaps
+  const recurEl = document.getElementById('recurringGaps');
+  const trendInsightEl = document.getElementById('trendInsightText');
+  if(loggedDates.length === 0){
+    recurEl.innerHTML = '<div class="empty">Log a few days to see recurring gaps here.</div>';
+    trendInsightEl.textContent = 'Log a few days to see a trend summary here.';
+    return;
+  }
+
+  const stats = microDefs.map(def=>{
+    let sum = 0, badCount = 0;
+    loggedDates.forEach(d=>{
+      const t = totals(state.allLogs[d]);
+      const pct = tg[def.key] ? (t[def.key]/tg[def.key])*100 : 0;
+      sum += pct;
+      if(def.type === 'limit'){ if(t[def.key] > tg[def.key]) badCount++; }
+      else { if(pct < 90) badCount++; }
+    });
+    return {...def, avgPct: sum/loggedDates.length, badCount};
+  }).filter(d=>d.badCount > 0).sort((a,b)=> b.badCount - a.badCount).slice(0,5);
+
+  if(stats.length === 0){
+    recurEl.innerHTML = '<div class="empty">No recurring gaps in this period — nutrient targets were mostly met.</div>';
+  } else {
+    recurEl.innerHTML = stats.map(s=>{
+      const label = s.type === 'limit'
+        ? `Over limit on ${s.badCount} of ${loggedDates.length} logged days`
+        : `Short on ${s.badCount} of ${loggedDates.length} logged days`;
+      return `<div class="recur-item">
+        <div class="rtitle"><span>${s.label}</span><span class="rcount">${label}</span></div>
+        <div class="rbenefit">${s.benefit} Averaged ${Math.round(s.avgPct)}% of ${s.type==='limit' ? 'the limit' : 'target'} across logged days.</div>
+      </div>`;
+    }).join('');
+  }
+
+  const top = stats[0];
+  const sodiumStat = stats.find(s=>s.key==='sodium');
+  let insight = `Over ${loggedDates.length} logged day${loggedDates.length===1?'':'s'} in this period, average calorie intake ran ${Math.round(avgPctKcal)}% of target.`;
+  if(top){
+    insight += ` The most consistent gap was ${top.label.toLowerCase()}${top.type==='limit' ? ', running over the guideline' : ''} on ${top.badCount} of ${loggedDates.length} days.`;
+  } else {
+    insight += ` No single nutrient showed a recurring gap — targets were mostly met across logged days.`;
+  }
+  if(sodiumStat && top !== sodiumStat){
+    insight += ` Sodium also ran over its guideline on ${sodiumStat.badCount} of ${loggedDates.length} days.`;
+  }
+  trendInsightEl.textContent = insight;
+}
+
+// ---------- Sample data (testing utility) ----------
+function findFoodByName(name){
+  const f = FOODS.find(x=>x.name === name);
+  if(!f) console.warn('Sample data: food not found —', name);
+  return f;
+}
+function mkEntry(name, servings, meal){
+  const f = findFoodByName(name);
+  if(!f) return null;
+  return {...f, servings, meal, id: Date.now()+Math.random()};
+}
+
+// Five rotating day templates — deliberately light on iron- and vitamin-D-rich
+// foods, and includes a couple of higher-sodium dishes, so the "recurring
+// gaps" trend logic has something real to surface.
+const SAMPLE_TEMPLATES = [
+  [ ['Idli (2 pieces)',1,'breakfast'], ['Sambar (1 cup)',1,'breakfast'],
+    ['Cooked rice (1 cup)',1,'lunch'], ['Dal / lentil curry (1 cup)',1,'lunch'], ['Cabbage, cooked (1 cup)',0.5,'lunch'],
+    ['Whole wheat roti (1 medium)',2,'dinner'], ['Paneer (100g)',0.5,'dinner'],
+    ['Banana (1 medium)',1,'snack'] ],
+  [ ['Poha (1 cup)',1,'breakfast'], ['Tea with milk (1 cup)',1,'breakfast'],
+    ['Biryani, chicken (1 plate)',1,'lunch'],
+    ['Whole wheat roti (1 medium)',2,'dinner'], ['Chole / chickpea curry (1 cup)',1,'dinner'],
+    ['Orange (1 medium)',1,'snack'] ],
+  [ ['Masala dosa (1 medium)',1,'breakfast'],
+    ['Cooked rice (1 cup)',1,'lunch'], ['Curd / plain yogurt (1 cup)',1,'lunch'],
+    ['Fish curry (1 cup)',1,'dinner'], ['Cooked rice (1 cup)',1,'dinner'],
+    ['Almonds (28g, ~23 nuts)',1,'snack'] ],
+  [ ['Bread slice, white (1 slice)',2,'breakfast'], ['Egg, boiled (1 large)',2,'breakfast'], ['Milk, whole (1 cup)',1,'breakfast'],
+    ['Pizza (1 slice)',2,'lunch'],
+    ['Biryani, vegetable (1 plate)',1,'dinner'],
+    ['Chocolate bar (40g)',1,'snack'] ],
+  [ ['Upma (1 cup)',1,'breakfast'],
+    ['Rajma / kidney bean curry (1 cup)',1,'lunch'], ['Cooked rice (1 cup)',1,'lunch'],
+    ['Whole wheat roti (1 medium)',2,'dinner'], ['Mutton curry (1 cup)',0.75,'dinner'],
+    ['Papad, roasted (1 piece)',1,'snack'], ['Tea with milk (1 cup)',1,'snack'] ],
+];
+const SAMPLE_SKIP_OFFSETS = [5, 10]; // days ago that are deliberately left unlogged
+
+// Inline confirm — native confirm()/alert() dialogs are blocked in the
+// sandboxed iframe artifacts render in, so destructive actions get an
+// in-page confirmation row instead of a browser dialog.
+function inlineConfirm(message, onConfirm){
+  const row = document.getElementById('sampleConfirmRow');
+  document.getElementById('sampleConfirmMsg').textContent = message;
+  row.style.display = 'flex';
+  const yesBtn = document.getElementById('sampleConfirmYes');
+  const noBtn = document.getElementById('sampleConfirmNo');
+  const cleanup = ()=>{ row.style.display = 'none'; yesBtn.onclick = null; noBtn.onclick = null; };
+  yesBtn.onclick = ()=>{ cleanup(); onConfirm(); };
+  noBtn.onclick = cleanup;
+}
+
+async function runLoadSampleData(){
+  const status = document.getElementById('sampleStatus');
+  try{
+    for(let i=13; i>=0; i--){
+      const d = new Date(); d.setDate(d.getDate()-i);
+      const dateStr = toDateStr(d);
+      if(SAMPLE_SKIP_OFFSETS.includes(i)){
+        state.allLogs[dateStr] = [];
+        continue;
+      }
+      const template = SAMPLE_TEMPLATES[i % SAMPLE_TEMPLATES.length];
+      state.allLogs[dateStr] = template.map(([name,servings,meal])=>mkEntry(name,servings,meal)).filter(Boolean);
+    }
+
+    status.textContent = 'Sample data loaded — saving…';
+    logDateInput.value = TODAY_STR;
+    state.currentDate = TODAY_STR;
+    renderLog();
+    renderGaps();
+    renderStreakBanner();
+    renderTrends();
+
+    if(hasStorage){
+      try{
+        await window.storage.set('diet-log', JSON.stringify(state.allLogs));
+        status.textContent = '14 days of sample data loaded and saved. Switch the range buttons above to see it.';
+      } catch(e){
+        status.textContent = 'Sample data loaded for this session, but saving failed — it will not persist after reload.';
+      }
+    } else {
+      status.textContent = "Sample data loaded for this session only (storage isn't available outside Claude.ai).";
+    }
+  } catch(e){
+    status.textContent = 'Something went wrong loading sample data: ' + e.message;
+    console.error(e);
+  }
+}
+
+async function runClearHistory(){
+  const status = document.getElementById('sampleStatus');
+  try{
+    state.allLogs = {};
+    renderLog();
+    renderGaps();
+    renderStreakBanner();
+    renderTrends();
+    if(hasStorage){
+      try{
+        await window.storage.set('diet-log', JSON.stringify(state.allLogs));
+        status.textContent = 'All diet history cleared.';
+      } catch(e){
+        status.textContent = "Cleared for this session, but couldn't save the change.";
+      }
+    } else {
+      status.textContent = 'Cleared for this session.';
+    }
+  } catch(e){
+    status.textContent = 'Something went wrong clearing history: ' + e.message;
+    console.error(e);
+  }
+}
+
+document.getElementById('loadSampleBtn').onclick = ()=>{
+  inlineConfirm('This fills the last 14 days with sample entries, overwriting any real entries on those dates.', runLoadSampleData);
+};
+
+document.getElementById('clearSampleBtn').onclick = ()=>{
+  inlineConfirm('This permanently clears all saved diet history, including any real entries.', runClearHistory);
+};
+
+// ---------- Init ----------
+recalc();
+renderLog();
+loadAllLogs();
+</script>
+</body>
+</html>
