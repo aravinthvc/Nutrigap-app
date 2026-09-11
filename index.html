@@ -318,6 +318,7 @@
   .flag.low{ background:var(--rust-wash); color:var(--rust); }
   .flag.normal{ background:var(--teal-wash); color:var(--teal-deep); }
   .flag.high{ background:var(--rust-wash); color:var(--rust); }
+  .flag.unknown{ background:var(--line-soft); color:var(--ink-soft); }
 
   /* Wearables */
   .wearable-grid{ display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
@@ -773,42 +774,35 @@
     <section class="panel" data-panel="medical">
       <div class="page-head">
         <h1>Medical report reader</h1>
-        <p>Upload a lab report to see values compared against standard reference ranges.</p>
+        <p>Upload a lab report to see values compared against the reference ranges printed on your own report.</p>
       </div>
 
       <div class="disclaimer warn">
         <strong>How this works, and what it will never do</strong>
-        This tool reads values that are explicitly present in your report and compares them only to published lab reference ranges. It does not diagnose, does not infer conditions you haven't been tested for, and does not recommend treatment. It will not guess at a value that isn't in the document. Always review results with your doctor.
+        This tool reads values that are explicitly present in your report and compares them only to reference ranges printed on that same report — never a general range from elsewhere. It does not diagnose, does not infer conditions you haven't been tested for, and does not recommend treatment. Always review results with your doctor.
       </div>
 
       <div class="card">
         <div class="upload-box" id="uploadBox">
           <div id="uploadPrompt">Drop a PDF or image of your lab report here, or</div>
           <div style="margin-top:12px;">
-            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png" style="display:none;">
+            <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none;">
             <button class="btn ghost small" id="chooseFileBtn">Choose file</button>
           </div>
+          <div style="font-size:11.5px; color:var(--ink-faint); margin-top:10px;">PDF, JPG, PNG, or WEBP — up to about 4MB.</div>
         </div>
         <div id="analyzeRow" style="display:none; margin-top:16px; text-align:right;">
           <button class="btn" id="analyzeBtn">Analyze report</button>
         </div>
+        <div id="reportStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:10px; min-height:16px;"></div>
 
         <div id="reportOutput" style="display:none; margin-top:24px;">
-          <div class="disclaimer">
-            <strong>Illustrative sample — not your actual report</strong>
-            This prototype does not perform real document extraction. The rows below show the format the live version would produce, using Claude to read only the numbers printed in your file.
-          </div>
+          <div id="reportMeta" class="note" style="margin-top:0; display:none;"></div>
           <table class="report">
-            <thead><tr><th>Marker</th><th>Reported value</th><th>Reference range</th><th></th></tr></thead>
-            <tbody>
-              <tr><td>Hemoglobin</td><td>11.2 g/dL</td><td>13.0 – 17.0 g/dL</td><td><span class="flag low">Below range</span></td></tr>
-              <tr><td>Fasting glucose</td><td>94 mg/dL</td><td>70 – 99 mg/dL</td><td><span class="flag normal">Within range</span></td></tr>
-              <tr><td>Vitamin D (25-OH)</td><td>18 ng/mL</td><td>30 – 100 ng/mL</td><td><span class="flag low">Below range</span></td></tr>
-              <tr><td>TSH</td><td>2.1 µIU/mL</td><td>0.4 – 4.0 µIU/mL</td><td><span class="flag normal">Within range</span></td></tr>
-              <tr><td>LDL cholesterol</td><td>142 mg/dL</td><td>&lt; 100 mg/dL (optimal)</td><td><span class="flag high">Above range</span></td></tr>
-            </tbody>
+            <thead><tr><th>Marker</th><th>Reported value</th><th>Reference range (from your report)</th><th></th></tr></thead>
+            <tbody id="reportBody"></tbody>
           </table>
-          <div class="note">Two values sit outside their reference range. That is a fact stated in your report, not a diagnosis — bring these results to your doctor to discuss what, if anything, they mean for you.</div>
+          <div class="note" id="reportSummaryNote"></div>
         </div>
       </div>
     </section>
@@ -1612,20 +1606,120 @@ async function renderInsight(t, tg){
   }
 }
 
-// ---------- Medical mock ----------
+// ---------- Medical report reader (real, calls Claude via our serverless function) ----------
 const fileInput = document.getElementById('fileInput');
 const uploadBox = document.getElementById('uploadBox');
+let selectedFile = null;
+
 document.getElementById('chooseFileBtn').onclick = ()=> fileInput.click();
 fileInput.onchange = ()=>{
   if(fileInput.files.length){
-    document.getElementById('uploadPrompt').textContent = 'Selected: ' + fileInput.files[0].name;
+    selectedFile = fileInput.files[0];
+    document.getElementById('uploadPrompt').textContent = 'Selected: ' + selectedFile.name;
     uploadBox.classList.add('has-file');
     document.getElementById('analyzeRow').style.display = 'block';
+    document.getElementById('reportStatus').textContent = '';
+    document.getElementById('reportOutput').style.display = 'none';
   }
 };
-document.getElementById('analyzeBtn').onclick = ()=>{
-  document.getElementById('reportOutput').style.display = 'block';
+
+function fileToBase64(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onload = ()=> resolve(reader.result.split(',')[1]); // strip the data: prefix
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
+document.getElementById('analyzeBtn').onclick = async ()=>{
+  if(!selectedFile) return;
+  const status = document.getElementById('reportStatus');
+  const analyzeBtn = document.getElementById('analyzeBtn');
+
+  if(selectedFile.size > 4.2 * 1024 * 1024){
+    status.textContent = 'That file is a bit large — please use one under about 4MB.';
+    status.style.color = 'var(--rust)';
+    return;
+  }
+
+  analyzeBtn.disabled = true;
+  status.style.color = 'var(--ink-faint)';
+  status.textContent = 'Reading your report…';
+  document.getElementById('reportOutput').style.display = 'none';
+
+  try{
+    const fileBase64 = await fileToBase64(selectedFile);
+    const mediaType = selectedFile.type || 'application/pdf';
+    const res = await fetch('/api/read-report', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ fileBase64, mediaType })
+    });
+    const data = await res.json();
+    if(!res.ok){
+      if(data.rawPreview) console.error('Report raw response preview:', data.rawPreview);
+      throw new Error(data.error || 'Request failed');
+    }
+
+    if(data.notAReport){
+      status.textContent = "That doesn't look like a lab or medical report — try a different file.";
+      status.style.color = 'var(--rust)';
+      analyzeBtn.disabled = false;
+      return;
+    }
+
+    renderReportResults(data);
+    status.textContent = '';
+  } catch(e){
+    console.error('Report analysis error:', e);
+    status.textContent = "Couldn't read that report just now — try again in a moment.";
+    status.style.color = 'var(--rust)';
+  } finally {
+    analyzeBtn.disabled = false;
+  }
 };
+
+function renderReportResults(data){
+  const metaEl = document.getElementById('reportMeta');
+  const bodyEl = document.getElementById('reportBody');
+  const summaryEl = document.getElementById('reportSummaryNote');
+  const markers = data.markers || [];
+
+  if(data.reportDate){
+    metaEl.style.display = 'block';
+    metaEl.textContent = 'Report date (as printed): ' + data.reportDate;
+  } else {
+    metaEl.style.display = 'none';
+  }
+
+  if(markers.length === 0){
+    bodyEl.innerHTML = '<tr><td colspan="4" style="color:var(--ink-faint);">No lab values could be read from this document.</td></tr>';
+    summaryEl.textContent = '';
+  } else {
+    bodyEl.innerHTML = markers.map(m=>{
+      const flagClass = (m.flag || 'unknown').toLowerCase();
+      const flagLabel = {low:'Below range', normal:'Within range', high:'Above range', unknown:'No range on report'}[flagClass] || 'No range on report';
+      const valueDisplay = m.unit ? `${m.value} ${m.unit}` : m.value;
+      return `<tr>
+        <td>${m.name}</td>
+        <td>${valueDisplay}</td>
+        <td>${m.referenceRange || '<span style="color:var(--ink-faint);">Not stated on report</span>'}</td>
+        <td><span class="flag ${flagClass}">${flagLabel}</span></td>
+      </tr>`;
+    }).join('');
+
+    const outOfRange = markers.filter(m=>m.flag==='Low' || m.flag==='High').length;
+    const noRange = markers.filter(m=>m.flag==='Unknown').length;
+    let summary = `Read ${markers.length} value${markers.length===1?'':'s'} from your report.`;
+    if(outOfRange > 0) summary += ` ${outOfRange} sit outside the range printed on the report — that's a fact from your document, not a diagnosis.`;
+    if(noRange > 0) summary += ` ${noRange} had no reference range printed, so no comparison could be made for ${noRange===1?'it':'them'}.`;
+    summary += ' Bring these results to your doctor to discuss what, if anything, they mean for you.';
+    summaryEl.textContent = summary;
+  }
+
+  document.getElementById('reportOutput').style.display = 'block';
+}
 
 // ---------- Wearables mock ----------
 const WEARABLES = [
