@@ -66,11 +66,6 @@ Available foods — choose suggestion names ONLY from this exact list: ${JSON.st
         system: systemPrompt,
         messages: [
           { role: 'user', content: userPrompt },
-          // Prefilling the assistant's turn with "{" forces the reply to
-          // continue directly as a JSON object, which reliably prevents
-          // the model from adding an intro sentence or a closing remark
-          // before/after the JSON.
-          { role: 'assistant', content: '{' },
         ],
       }),
     });
@@ -83,11 +78,10 @@ Available foods — choose suggestion names ONLY from this exact list: ${JSON.st
 
     const data = await response.json();
     const rawText = (data.content && data.content[0] && data.content[0].text) || '';
-    // Add back the "{" we prefilled, since the model's own text continues
-    // after it rather than repeating it, then strip any stray code fences
-    // and grab everything between the first "{" and the last "}" as a
-    // final safety net against any leading/trailing text.
-    let cleaned = ('{' + rawText).replace(/```json|```/g, '').trim();
+    // Strip any stray code fences, then grab everything between the first
+    // "{" and the last "}" as a safety net against any leading/trailing
+    // text the model adds despite being told not to.
+    let cleaned = rawText.replace(/```json|```/g, '').trim();
     const start = cleaned.indexOf('{');
     const end = cleaned.lastIndexOf('}');
     if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
