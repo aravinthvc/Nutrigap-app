@@ -1594,7 +1594,10 @@ async function renderInsight(t, tg){
       })
     });
     const data = await res.json();
-    if(!res.ok) throw new Error(data.error || 'Request failed');
+    if(!res.ok){
+      if(data.rawPreview) console.error('Insight raw response preview:', data.rawPreview);
+      throw new Error(data.error || 'Request failed');
+    }
 
     insightEl.textContent = data.analysis;
     suggEl.innerHTML = (data.suggestions||[]).map(s=>{
