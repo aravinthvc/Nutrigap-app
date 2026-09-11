@@ -77,7 +77,12 @@ Available foods — choose suggestion names ONLY from this exact list: ${JSON.st
     }
 
     const data = await response.json();
-    const rawText = (data.content && data.content[0] && data.content[0].text) || '';
+    // Look for the actual text block rather than assuming it's the first
+    // item — newer Claude models can return a "thinking" block ahead of
+    // the text block, and grabbing content[0] blindly would grab that
+    // instead and come back empty.
+    const textBlock = (data.content || []).find(b => b.type === 'text');
+    const rawText = (textBlock && textBlock.text) || '';
     // Strip any stray code fences, then grab everything between the first
     // "{" and the last "}" as a safety net against any leading/trailing
     // text the model adds despite being told not to.
@@ -93,6 +98,7 @@ Available foods — choose suggestion names ONLY from this exact list: ${JSON.st
       res.status(502).json({
         error: 'Could not parse the AI response as JSON.',
         rawPreview: cleaned.slice(0, 300),
+        blockTypes: (data.content || []).map(b => b.type),
       });
       return;
     }
