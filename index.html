@@ -420,6 +420,23 @@
   .recur-item .rtitle{ display:flex; justify-content:space-between; font-size:14px; font-weight:500; }
   .recur-item .rtitle .rcount{ font-family:'IBM Plex Mono', monospace; font-weight:500; font-size:12.5px; color:var(--rust); }
   .recur-item .rbenefit{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; line-height:1.4; }
+
+  .saved-report{ border:1px solid var(--line); border-radius:var(--radius-m); padding:16px 18px; margin-top:12px; }
+  .saved-report .srow{ display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; }
+  .saved-report .stitle{ font-weight:500; font-size:14.5px; }
+  .saved-report .smeta{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
+  .saved-report .sactions{ display:flex; gap:8px; flex-shrink:0; }
+  .saved-report .sbody{ display:none; margin-top:16px; }
+  .saved-report .sbody.open{ display:block; }
+  .saved-report table.report input{
+    width:100%; padding:5px 7px; border:1px solid var(--line); border-radius:4px;
+    font-family:inherit; font-size:13px;
+  }
+  .inline-confirm-popover{
+    display:flex; align-items:center; gap:10px; flex-wrap:wrap;
+    background:var(--rust-wash); border-radius:var(--radius-s);
+    padding:10px 12px; margin-top:10px; font-size:13px; color:#5c2c0d;
+  }
 </style>
 </head>
 <body>
@@ -803,7 +820,17 @@
             <tbody id="reportBody"></tbody>
           </table>
           <div class="note" id="reportSummaryNote"></div>
+          <div style="text-align:right; margin-top:14px;">
+            <button class="btn ghost small" id="saveReportBtn">Save to my reports</button>
+          </div>
+          <div id="saveReportStatus" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
         </div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your saved reports</h3>
+        <div id="savedReportsList"></div>
+        <div class="empty" id="savedReportsEmpty">No reports saved yet.</div>
       </div>
     </section>
 
@@ -979,6 +1006,7 @@ function showPanel(id){
   document.querySelectorAll('.nav-item').forEach(n=>n.classList.toggle('active', n.dataset.target===id));
   window.scrollTo({top:0});
   if(id === 'trends') renderTrends();
+  if(id === 'medical') loadSavedReports();
 }
 showPanel('profile');
 
@@ -1669,7 +1697,9 @@ document.getElementById('analyzeBtn').onclick = async ()=>{
       return;
     }
 
+    lastAnalyzedReport = { ...data, fileName: selectedFile.name };
     renderReportResults(data);
+    document.getElementById('saveReportStatus').textContent = '';
     status.textContent = '';
   } catch(e){
     console.error('Report analysis error:', e);
@@ -1680,15 +1710,20 @@ document.getElementById('analyzeBtn').onclick = async ()=>{
   }
 };
 
+let lastAnalyzedReport = null;
+
 function renderReportResults(data){
   const metaEl = document.getElementById('reportMeta');
   const bodyEl = document.getElementById('reportBody');
   const summaryEl = document.getElementById('reportSummaryNote');
   const markers = data.markers || [];
 
-  if(data.reportDate){
+  const metaBits = [];
+  if(data.patientName) metaBits.push('Patient (as printed): ' + data.patientName);
+  if(data.reportDate) metaBits.push('Report date (as printed): ' + data.reportDate);
+  if(metaBits.length){
     metaEl.style.display = 'block';
-    metaEl.textContent = 'Report date (as printed): ' + data.reportDate;
+    metaEl.textContent = metaBits.join(' · ');
   } else {
     metaEl.style.display = 'none';
   }
@@ -1719,6 +1754,149 @@ function renderReportResults(data){
   }
 
   document.getElementById('reportOutput').style.display = 'block';
+}
+
+// ---------- Reusable inline confirm (native confirm() is blocked in some contexts) ----------
+function showInlineConfirm(anchorEl, message, onConfirm){
+  document.querySelectorAll('.inline-confirm-popover').forEach(el=>el.remove());
+  const pop = document.createElement('div');
+  pop.className = 'inline-confirm-popover';
+  pop.innerHTML = `<span>${message}</span>
+    <button class="btn small confirm-yes" style="background:var(--rust);">Yes, delete</button>
+    <button class="btn ghost small confirm-no">Cancel</button>`;
+  anchorEl.insertAdjacentElement('afterend', pop);
+  pop.querySelector('.confirm-yes').onclick = ()=>{ pop.remove(); onConfirm(); };
+  pop.querySelector('.confirm-no').onclick = ()=> pop.remove();
+}
+
+// ---------- Saved medical reports (save / view / edit / delete) ----------
+document.getElementById('saveReportBtn').onclick = async ()=>{
+  if(!currentUser || !lastAnalyzedReport) return;
+  const statusEl = document.getElementById('saveReportStatus');
+  statusEl.style.color = 'var(--ink-faint)';
+  statusEl.textContent = 'Saving…';
+  const { error } = await db.from('medical_reports').insert({
+    user_id: currentUser.id,
+    patient_name: lastAnalyzedReport.patientName || null,
+    report_date: lastAnalyzedReport.reportDate || null,
+    file_name: lastAnalyzedReport.fileName || null,
+    markers: lastAnalyzedReport.markers || [],
+  });
+  if(error){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = "Couldn't save: " + error.message;
+    return;
+  }
+  statusEl.style.color = 'var(--teal-deep)';
+  statusEl.textContent = 'Saved to your reports below.';
+  await loadSavedReports();
+};
+
+async function loadSavedReports(){
+  if(!currentUser) return;
+  const { data, error } = await db
+    .from('medical_reports')
+    .select('*')
+    .eq('user_id', currentUser.id)
+    .order('created_at', { ascending: false });
+  if(error){ console.error('Could not load saved reports:', error.message); return; }
+  renderSavedReportsList(data || []);
+}
+
+function renderSavedReportsList(reports){
+  const listEl = document.getElementById('savedReportsList');
+  const emptyEl = document.getElementById('savedReportsEmpty');
+  if(reports.length === 0){
+    listEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  listEl.innerHTML = reports.map(r=>{
+    const markers = r.markers || [];
+    const outOfRange = markers.filter(m=>m.flag==='Low' || m.flag==='High').length;
+    const metaBits = [];
+    if(r.patient_name) metaBits.push(r.patient_name);
+    if(r.report_date) metaBits.push(r.report_date);
+    metaBits.push(`${markers.length} value${markers.length===1?'':'s'}`);
+    if(outOfRange > 0) metaBits.push(`${outOfRange} outside range`);
+    const savedOn = new Date(r.created_at).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'});
+
+    return `<div class="saved-report" data-id="${r.id}">
+      <div class="srow">
+        <div>
+          <div class="stitle">${r.file_name || 'Untitled report'}</div>
+          <div class="smeta">${metaBits.join(' · ')} · saved ${savedOn}</div>
+        </div>
+        <div class="sactions">
+          <button class="btn ghost small toggle-btn">View / edit</button>
+          <button class="btn ghost small delete-btn">Delete</button>
+        </div>
+      </div>
+      <div class="sbody">
+        <table class="report">
+          <thead><tr><th>Marker</th><th>Value</th><th>Unit</th><th>Reference range</th></tr></thead>
+          <tbody>
+            ${markers.map((m,i)=>`<tr>
+              <td>${m.name}</td>
+              <td><input type="text" class="edit-value" data-i="${i}" value="${(m.value ?? '').toString().replace(/"/g,'&quot;')}"></td>
+              <td><input type="text" class="edit-unit" data-i="${i}" value="${(m.unit ?? '').toString().replace(/"/g,'&quot;')}"></td>
+              <td><input type="text" class="edit-range" data-i="${i}" value="${(m.referenceRange ?? '').toString().replace(/"/g,'&quot;')}"></td>
+            </tr>`).join('')}
+          </tbody>
+        </table>
+        <div style="text-align:right; margin-top:12px; display:flex; justify-content:flex-end; gap:8px;">
+          <button class="btn ghost small save-edit-btn">Save changes</button>
+        </div>
+        <div class="edit-status" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
+      </div>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.saved-report').forEach(card=>{
+    const id = card.dataset.id;
+    const body = card.querySelector('.sbody');
+    card.querySelector('.toggle-btn').onclick = ()=> body.classList.toggle('open');
+
+    card.querySelector('.delete-btn').onclick = (e)=>{
+      showInlineConfirm(e.target, 'Permanently delete this saved report?', async ()=>{
+        const { error } = await db.from('medical_reports').delete().eq('id', id);
+        if(error){ console.error('Could not delete report:', error.message); return; }
+        await loadSavedReports();
+      });
+    };
+
+    card.querySelector('.save-edit-btn').onclick = async ()=>{
+      const statusEl = card.querySelector('.edit-status');
+      const report = reports.find(r=>String(r.id)===String(id));
+      const markers = (report.markers || []).map((m,i)=>{
+        const value = card.querySelector(`.edit-value[data-i="${i}"]`).value;
+        const unit = card.querySelector(`.edit-unit[data-i="${i}"]`).value || null;
+        const referenceRange = card.querySelector(`.edit-range[data-i="${i}"]`).value || null;
+        // Re-derive the flag from the edited value/range the same way the
+        // server does, so an edit can't leave a stale Low/High label behind.
+        let flag = 'Unknown';
+        if(referenceRange){
+          const nums = referenceRange.match(/-?\d+(\.\d+)?/g);
+          const numeric = parseFloat(value);
+          if(nums && nums.length >= 2 && !isNaN(numeric)){
+            const lo = parseFloat(nums[0]), hi = parseFloat(nums[1]);
+            flag = numeric < lo ? 'Low' : numeric > hi ? 'High' : 'Normal';
+          } else {
+            flag = m.flag || 'Unknown';
+          }
+        }
+        return { ...m, value, unit, referenceRange, flag };
+      });
+      statusEl.textContent = 'Saving…';
+      const { error } = await db.from('medical_reports').update({ markers, updated_at: new Date().toISOString() }).eq('id', id);
+      if(error){ statusEl.style.color='var(--rust)'; statusEl.textContent = "Couldn't save: " + error.message; return; }
+      statusEl.style.color = 'var(--teal-deep)';
+      statusEl.textContent = 'Saved.';
+      await loadSavedReports();
+    };
+  });
 }
 
 // ---------- Wearables mock ----------
