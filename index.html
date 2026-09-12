@@ -1684,10 +1684,18 @@ document.getElementById('analyzeBtn').onclick = async ()=>{
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ fileBase64, mediaType })
     });
-    const data = await res.json();
+
+    // A platform-level timeout returns a plain-text error page, not JSON —
+    // guard the parse so that doesn't itself throw an unhelpful error.
+    let data = null;
+    try { data = await res.json(); } catch(parseErr) { /* leave data null */ }
+
     if(!res.ok){
-      if(data.rawPreview) console.error('Report raw response preview:', data.rawPreview);
-      throw new Error(data.error || 'Request failed');
+      if(data && data.rawPreview) console.error('Report raw response preview:', data.rawPreview);
+      if(res.status === 504 || !data){
+        throw new Error('TIMEOUT');
+      }
+      throw new Error(data.error || `Request failed (status ${res.status})`);
     }
 
     if(data.notAReport){
@@ -1703,7 +1711,11 @@ document.getElementById('analyzeBtn').onclick = async ()=>{
     status.textContent = '';
   } catch(e){
     console.error('Report analysis error:', e);
-    status.textContent = "Couldn't read that report just now — try again in a moment.";
+    if(e.message === 'TIMEOUT'){
+      status.textContent = "This report is too long to process in one go — it needs more time than this server currently allows. Try splitting it into smaller files (a few pages each) and uploading those instead.";
+    } else {
+      status.textContent = "Couldn't read that report just now: " + e.message;
+    }
     status.style.color = 'var(--rust)';
   } finally {
     analyzeBtn.disabled = false;
