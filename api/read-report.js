@@ -68,7 +68,7 @@ Respond with ONLY a JSON object — no markdown, no code fences, no commentary b
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 2000,
+        max_tokens: 4096,
         system: systemPrompt,
         messages: [
           {
