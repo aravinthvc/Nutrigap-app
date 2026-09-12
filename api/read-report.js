@@ -50,9 +50,10 @@ Rules you must follow without exception:
 - Do not comment on the person's overall health status or how "concerning" any result is.
 - If the document does not appear to be a medical or lab report, set "notAReport" to true and return an empty "markers" array.
 - If you can find a report date printed on the document, include it as "reportDate" (as printed); otherwise null.
+- If you can find the patient's name printed on the document, include it as "patientName" (as printed); otherwise null. This lets one account keep reports for multiple family members straight.
 
 Respond with ONLY a JSON object — no markdown, no code fences, no commentary before or after — in exactly this shape:
-{"notAReport": false, "reportDate": "... or null", "markers": [{"name": "...", "value": "...", "unit": "... or null", "referenceRange": "... or null", "flag": "Low"}]}`;
+{"notAReport": false, "reportDate": "... or null", "patientName": "... or null", "markers": [{"name": "...", "value": "...", "unit": "... or null", "referenceRange": "... or null", "flag": "Low"}]}`;
 
   const fileBlock = mediaType === 'application/pdf'
     ? { type: 'document', source: { type: 'base64', media_type: mediaType, data: fileBase64 } }
@@ -68,7 +69,7 @@ Respond with ONLY a JSON object — no markdown, no code fences, no commentary b
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 4096,
+        max_tokens: 8192,
         system: systemPrompt,
         messages: [
           {
