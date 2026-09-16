@@ -478,9 +478,15 @@
   .explain-disclaimer{ font-size:11px; color:var(--ink-faint); margin-top:8px; font-style:italic; }
 
   .dnote-card{ border:1px solid #c3d4e0; background:var(--steel-wash); border-radius:var(--radius-m); padding:14px 16px; margin-top:12px; }
-  .dnote-card .dtitle{ font-weight:500; font-size:14px; color:#233b4d; }
+  .dnote-card .dtitle{ font-weight:500; font-size:14px; color:#233b4d; margin-bottom:10px; }
   .dnote-card .dbody{ font-size:13px; color:#233b4d; margin-top:6px; line-height:1.5; }
   .dnote-card .dfoods{ font-size:12.5px; color:#233b4d; margin-top:8px; }
+  .dnote-item{ padding:10px 0; border-top:1px solid #c3d4e0; }
+  .dnote-item:first-of-type{ border-top:none; padding-top:0; }
+  .dnote-item-title{ font-size:13px; color:#233b4d; line-height:1.4; }
+  .dnote-range{ font-weight:400; color:#4a6577; font-size:11.5px; }
+  .dtopic-list{ margin:0; padding-left:18px; font-size:13px; color:#233b4d; line-height:1.7; }
+  .dtopic-list li{ margin-bottom:2px; }
   .recipe-btn{ margin-top:10px; }
   .recipe-panel{ display:none; margin-top:12px; }
   .recipe-panel.open{ display:block; }
@@ -2517,32 +2523,38 @@ function renderDietitianNotes(trendData){
   if(foodNotes.length === 0 && topicNotes.length === 0){ card.style.display = 'none'; return; }
   card.style.display = 'block';
 
-  const foodNotesHtml = foodNotes.map((n)=>{
-    const nutrientLabels = n.nutrients.map(k => (microDefs.find(d=>d.key===k)||{}).label || k);
-    if(n.direction === 'High'){
-      return `<div class="dnote-card">
-        <div class="dtitle">Ask your dietitian: worth reviewing ${nutrientLabels.join(' / ').toLowerCase()} intake?</div>
-        <div class="dbody">Your ${n.markerLabel} reading sits above the range printed on your report. ${nutrientLabels[0]} intake is commonly discussed when this comes up — worth asking your dietitian or doctor whether it's relevant for you.</div>
-      </div>`;
-    }
-    const foodSet = [];
-    n.nutrients.forEach(k=> (NUTRIENT_FOOD_SUGGESTIONS[k] || []).forEach(f=>{ if(!foodSet.includes(f)) foodSet.push(f); }));
-    return `<div class="dnote-card">
-      <div class="dtitle">Ask your dietitian: could more ${nutrientLabels.join('/').toLowerCase()}-rich foods help?</div>
-      <div class="dbody">Your ${n.markerLabel} reading sits below the range printed on your report. ${nutrientLabels.join(', ')} ${n.nutrients.length>1?'are':'is'} commonly discussed alongside this — worth asking whether adding more ${nutrientLabels.join(' or ').toLowerCase()}-rich foods could help, such as:</div>
-      <div class="dfoods">${foodSet.join(' · ')}</div>
-      <button class="btn ghost small recipe-btn" data-foods='${JSON.stringify(foodSet).replace(/'/g,'&#39;')}'>Get recipe ideas</button>
-      <div class="recipe-panel"></div>
+  const foodNotesHtml = foodNotes.length === 0 ? '' : `
+    <div class="dnote-card">
+      <div class="dtitle">Nutrients worth asking about</div>
+      ${foodNotes.map((n)=>{
+        const nutrientLabels = n.nutrients.map(k => (microDefs.find(d=>d.key===k)||{}).label || k);
+        const direction = n.direction === 'High' ? 'above' : 'below';
+        if(n.direction === 'High'){
+          return `<div class="dnote-item">
+            <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range)</span> — ${nutrientLabels.join(' / ')}</div>
+          </div>`;
+        }
+        const foodSet = [];
+        n.nutrients.forEach(k=> (NUTRIENT_FOOD_SUGGESTIONS[k] || []).forEach(f=>{ if(!foodSet.includes(f)) foodSet.push(f); }));
+        return `<div class="dnote-item">
+          <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range)</span> — ${nutrientLabels.join(' / ')}</div>
+          <div class="dfoods">${foodSet.join(' · ')}</div>
+          <button class="btn ghost small recipe-btn" data-foods='${JSON.stringify(foodSet).replace(/'/g,'&#39;')}'>Get recipe ideas</button>
+          <div class="recipe-panel"></div>
+        </div>`;
+      }).join('')}
     </div>`;
-  }).join('');
 
-  const topicNotesHtml = topicNotes.map((n)=>{
-    const direction = n.direction === 'High' ? 'above' : 'below';
-    return `<div class="dnote-card">
-      <div class="dtitle">Ask your dietitian: worth discussing ${n.topic}?</div>
-      <div class="dbody">Your ${n.markerLabel} reading sits ${direction} the range printed on your report. ${n.topic.charAt(0).toUpperCase()+n.topic.slice(1)} is commonly part of the conversation when this comes up — worth raising with your dietitian or doctor to see whether it's relevant for you.</div>
+  const topicNotesHtml = topicNotes.length === 0 ? '' : `
+    <div class="dnote-card">
+      <div class="dtitle">Other topics worth raising</div>
+      <ul class="dtopic-list">
+        ${topicNotes.map(n=>{
+          const direction = n.direction === 'High' ? 'above' : 'below';
+          return `<li><strong>${n.markerLabel}</strong> <span class="dnote-range">(${direction} range)</span> — ${n.topic}</li>`;
+        }).join('')}
+      </ul>
     </div>`;
-  }).join('');
 
   listEl.innerHTML = foodNotesHtml + topicNotesHtml;
 
