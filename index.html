@@ -468,6 +468,27 @@
   .trend-detail-table.open{ display:table; }
   .trend-detail-table th, .trend-detail-table td{ padding:6px 8px; border-bottom:1px solid var(--line-soft); text-align:left; }
   .range-differs-note{ font-size:11px; color:var(--steel); margin-top:8px; }
+  .explain-btn{ color:var(--teal-deep); cursor:pointer; text-decoration:underline; text-decoration-style:dotted; }
+  .explain-panel{ display:none; margin-top:10px; }
+  .explain-body{
+    background:var(--line-soft); border-radius:var(--radius-s); padding:12px 14px; font-size:13px; line-height:1.5;
+  }
+  .explain-row{ margin-bottom:8px; }
+  .explain-row:last-of-type{ margin-bottom:0; }
+  .explain-disclaimer{ font-size:11px; color:var(--ink-faint); margin-top:8px; font-style:italic; }
+
+  .dnote-card{ border:1px solid #c3d4e0; background:var(--steel-wash); border-radius:var(--radius-m); padding:14px 16px; margin-top:12px; }
+  .dnote-card .dtitle{ font-weight:500; font-size:14px; color:#233b4d; }
+  .dnote-card .dbody{ font-size:13px; color:#233b4d; margin-top:6px; line-height:1.5; }
+  .dnote-card .dfoods{ font-size:12.5px; color:#233b4d; margin-top:8px; }
+  .recipe-btn{ margin-top:10px; }
+  .recipe-panel{ display:none; margin-top:12px; }
+  .recipe-panel.open{ display:block; }
+  .recipe-item{ background:#fff; border:1px solid var(--line); border-radius:var(--radius-s); padding:12px 14px; margin-top:8px; }
+  .recipe-item .rtitle{ font-weight:500; font-size:13.5px; }
+  .recipe-item .rmeta{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; }
+  .recipe-item ul{ margin:8px 0 0; padding-left:18px; font-size:12.5px; }
+  .recipe-item ol{ margin:8px 0 0; padding-left:18px; font-size:12.5px; }
 </style>
 </head>
 <body>
@@ -873,6 +894,15 @@
         <div class="segmented" id="trendCategoryGroup" style="margin-top:14px; flex-wrap:wrap;"></div>
         <div id="medicalTrendsList" style="margin-top:16px;"></div>
         <div class="empty" id="medicalTrendsEmpty" style="display:none;">Save at least one report with readable values to see trends here.</div>
+      </div>
+
+      <div class="card" id="dietitianNotesCard" style="margin-top:20px; display:none;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Notes for your dietitian</h3>
+        <div class="disclaimer" style="margin-top:0;">
+          <strong>Suggestions to raise, not instructions to follow</strong>
+          These are talking points, phrased the way a note to your dietitian might read — based on values from your reports that fall outside their printed range and are commonly discussed alongside certain nutrients. This app isn't deciding anything for you; it's flagging what might be worth asking about.
+        </div>
+        <div id="dietitianNotesList" style="margin-top:12px;"></div>
       </div>
     </section>
 
@@ -2048,6 +2078,133 @@ const MARKER_TAXONOMY = [
   {key:'crp', label:'CRP', category:'Inflammation', aliases:['c reactive protein','crp','hs crp']},
 ];
 
+// ---------- Static "what is this test" library (zero API cost) ----------
+// Plain-language, general/textbook-level facts about each recognized marker
+// — what it measures and its general significance in the population at
+// large. Deliberately never phrased as "your" result or about any specific
+// person, and never diagnostic — same register as the "Comments" sections
+// already printed on real lab reports.
+const MARKER_EDUCATION = {
+  hemoglobin: {what:"Hemoglobin is the protein in red blood cells that carries oxygen from the lungs to the rest of the body.", significance:"Levels below the typical range are commonly associated with anemia, which has many possible causes including low iron, vitamin B12, or folate intake, blood loss, or chronic disease. Levels above range can relate to dehydration or other conditions."},
+  rbc_count: {what:"Red Blood Cell (RBC) count measures how many oxygen-carrying red cells are in a given volume of blood.", significance:"It's usually interpreted alongside hemoglobin and hematocrit rather than alone, since all three reflect the same red-cell system."},
+  pcv: {what:"PCV (Packed Cell Volume, also called hematocrit) is the percentage of blood volume made up of red blood cells.", significance:"Low values often accompany low hemoglobin and can point toward anemia; high values can relate to dehydration or other conditions affecting red cell production."},
+  mcv: {what:"MCV (Mean Corpuscular Volume) measures the average size of red blood cells.", significance:"It helps classify the type of anemia when hemoglobin is low — small cells often point toward iron deficiency, while large cells can point toward vitamin B12 or folate deficiency."},
+  mch: {what:"MCH (Mean Corpuscular Hemoglobin) measures the average amount of hemoglobin inside each red blood cell.", significance:"It's typically reviewed together with MCV and MCHC to help characterize anemia, rather than as a standalone number."},
+  mchc: {what:"MCHC (Mean Corpuscular Hemoglobin Concentration) measures how concentrated hemoglobin is within red blood cells.", significance:"Like MCH, it's mainly used together with other red-cell indices to help classify anemia types."},
+  rdw: {what:"RDW (Red Cell Distribution Width) measures how much red blood cells vary in size from one another.", significance:"A higher-than-typical RDW can suggest a mixed or early-stage nutrient deficiency (such as iron, B12, or folate) before other values change."},
+  wbc_total: {what:"Total WBC (White Blood Cell) count measures the body's infection-fighting cells circulating in blood.", significance:"Higher counts commonly relate to infection, inflammation, or stress on the body; lower counts can relate to certain infections, medications, or bone marrow conditions."},
+  neutrophils: {what:"Neutrophils are the most common type of white blood cell and are the first responders to bacterial infection.", significance:"Elevated levels often accompany bacterial infection or inflammation; low levels can increase infection risk and have several possible causes."},
+  lymphocytes: {what:"Lymphocytes are white blood cells central to fighting viral infections and long-term immunity.", significance:"Levels can shift with viral infections, certain chronic conditions, or as a normal variant between individuals."},
+  monocytes: {what:"Monocytes are white blood cells that help clear infection and support tissue repair.", significance:"Mild elevations can accompany recovery from infection or chronic inflammatory conditions."},
+  eosinophils: {what:"Eosinophils are white blood cells involved in allergic responses and defense against parasites.", significance:"Elevated levels are commonly associated with allergies, asthma, or certain parasitic infections."},
+  basophils: {what:"Basophils are the least common white blood cell type, involved in allergic and inflammatory responses.", significance:"They make up a small fraction of white cells, so even normal variation can look proportionally large."},
+  abs_neutrophils: {what:"Absolute Neutrophil Count restates the neutrophil percentage as a true count per volume of blood, rather than a share of total white cells.", significance:"It's considered a more reliable measure than the percentage alone when total WBC count is itself unusual."},
+  abs_lymphocytes: {what:"Absolute Lymphocyte Count restates the lymphocyte percentage as a true count per volume of blood.", significance:"Like the other absolute counts, it's more informative than the percentage form when total WBC is atypical."},
+  abs_monocytes: {what:"Absolute Monocyte Count is the true count of monocytes per volume of blood, rather than a percentage.", significance:"Interpreted the same way as the percentage form, but not affected by shifts in other cell types."},
+  abs_eosinophils: {what:"Absolute Eosinophil Count is the true count of eosinophils per volume of blood.", significance:"Often used to track allergic conditions or parasitic infection over time, more precisely than the percentage."},
+  abs_basophils: {what:"Absolute Basophil Count is the true count of basophils per volume of blood.", significance:"Basophils are naturally low in number, so this value is usually small even when normal."},
+  platelet_count: {what:"Platelets are blood cell fragments responsible for clotting.", significance:"Low counts can increase bleeding risk; high counts can relate to inflammation, iron deficiency, or other conditions."},
+  mpv: {what:"MPV (Mean Platelet Volume) measures the average size of platelets.", significance:"Newer, larger platelets tend to be more active; MPV is usually reviewed together with the platelet count."},
+  esr: {what:"ESR (Erythrocyte Sedimentation Rate) measures how quickly red blood cells settle in a test tube, as a general marker of inflammation in the body.", significance:"It's a non-specific test — elevated results can relate to many different inflammatory, infectious, or autoimmune conditions, and it's rarely used alone to reach a conclusion."},
+
+  urea: {what:"Urea is a waste product from protein breakdown that the kidneys filter out of the blood.", significance:"Elevated levels can relate to reduced kidney function, dehydration, or a high-protein diet; it's usually reviewed alongside creatinine."},
+  creatinine: {what:"Creatinine is a waste product from normal muscle activity that healthy kidneys filter out efficiently.", significance:"It's one of the main markers used to assess how well the kidneys are filtering blood; elevated levels can suggest reduced kidney function."},
+  bun: {what:"Blood Urea Nitrogen (BUN) measures the nitrogen portion of urea in blood, reflecting both kidney function and protein metabolism.", significance:"It's typically interpreted together with creatinine rather than alone, since diet and hydration also affect it."},
+  uric_acid: {what:"Uric acid is a waste product from the breakdown of purines, compounds found in many foods and in the body's own cells.", significance:"Elevated levels are linked to gout and kidney stone risk; levels can be influenced by diet, alcohol, and certain medications."},
+  sodium: {what:"Sodium is an electrolyte that helps regulate fluid balance, nerve signals, and muscle function.", significance:"Levels outside the typical range can relate to hydration status, kidney function, or certain medications, and are generally followed up clinically rather than through diet alone."},
+  potassium: {what:"Potassium is an electrolyte essential for normal heart rhythm, muscle contraction, and nerve function.", significance:"Both low and high levels can affect heart function and are usually taken seriously clinically, since the safe range is relatively narrow."},
+  chloride: {what:"Chloride is an electrolyte that works alongside sodium to help maintain fluid balance and acid-base balance in the body.", significance:"It's usually interpreted together with sodium, potassium, and bicarbonate rather than in isolation."},
+  egfr: {what:"eGFR (estimated Glomerular Filtration Rate) is a calculated estimate of how well the kidneys are filtering blood, based on creatinine, age, and sex.", significance:"It's one of the main measures used to describe overall kidney function and to track it over time."},
+  calcium: {what:"Calcium is a mineral essential for bone strength, muscle function, nerve signaling, and blood clotting.", significance:"Blood calcium is tightly regulated by the body and doesn't necessarily reflect bone calcium stores directly; levels outside range can have several different causes."},
+  phosphorus: {what:"Phosphorus works closely with calcium to build and maintain bones and teeth, and plays a role in energy metabolism.", significance:"It's often reviewed alongside calcium and kidney function, since the kidneys help regulate phosphorus levels."},
+
+  bilirubin_total: {what:"Total Bilirubin measures a breakdown product of old red blood cells that the liver processes and removes.", significance:"Elevated levels can relate to liver function, bile duct issues, or increased red blood cell breakdown, and are a component of assessing jaundice."},
+  bilirubin_direct: {what:"Direct (conjugated) Bilirubin is the form the liver has already processed, ready for elimination via bile.", significance:"An elevated direct fraction more specifically points toward the liver or bile ducts, compared to elevated indirect bilirubin."},
+  bilirubin_indirect: {what:"Indirect (unconjugated) Bilirubin is the form not yet processed by the liver.", significance:"An elevated indirect fraction can relate to increased red blood cell breakdown or reduced liver processing capacity."},
+  total_protein: {what:"Total Protein measures the combined amount of albumin and globulin — the main proteins circulating in blood.", significance:"It gives a general picture of nutritional status, liver function, and kidney function, usually interpreted alongside albumin and globulin individually."},
+  albumin: {what:"Albumin is the most abundant blood protein, made by the liver, that helps maintain fluid balance and transports substances through the blood.", significance:"Low levels can relate to liver disease, kidney protein loss, inflammation, or inadequate protein intake."},
+  globulin: {what:"Globulins are a group of blood proteins that include antibodies and various transport proteins.", significance:"Levels can shift with immune activity, chronic inflammation, or liver and kidney conditions."},
+  ag_ratio: {what:"The Albumin/Globulin (A/G) Ratio compares the two main protein types in blood to each other.", significance:"An unusual ratio can point toward liver disease, kidney protein loss, or conditions affecting antibody levels, and is generally interpreted alongside the individual albumin and globulin values rather than alone."},
+  sgot_ast: {what:"SGOT/AST (Aspartate Aminotransferase) is an enzyme found in the liver and also in heart and muscle tissue.", significance:"Elevated levels can relate to liver cell injury, but since it's also present in muscle and heart tissue, it's usually interpreted alongside SGPT/ALT, which is more liver-specific."},
+  sgpt_alt: {what:"SGPT/ALT (Alanine Aminotransferase) is an enzyme found predominantly in liver cells.", significance:"It's one of the more specific markers of liver cell injury; elevated levels commonly prompt further liver-focused evaluation."},
+  ggt: {what:"GGT (Gamma-Glutamyl Transferase) is a liver enzyme also involved in processing bile.", significance:"It's often used alongside ALP to help determine whether an elevated ALP is coming from the liver/bile system or from bone."},
+  alp: {what:"ALP (Alkaline Phosphatase) is an enzyme found in liver, bile ducts, and bone.", significance:"Elevated levels can originate from either liver/bile conditions or bone conditions; GGT is often checked alongside it to help distinguish between the two."},
+
+  total_cholesterol: {what:"Total Cholesterol measures all the cholesterol carried in blood, combining LDL, HDL, and a portion of triglycerides.", significance:"It's one factor used in assessing cardiovascular risk, generally considered alongside the individual LDL and HDL values rather than alone."},
+  triglycerides: {what:"Triglycerides are the main form of fat stored and transported in blood, derived from food and from the liver.", significance:"Elevated levels are associated with cardiovascular risk and can be influenced by diet, alcohol intake, body weight, and blood sugar control."},
+  hdl: {what:"HDL (\"good\") Cholesterol helps carry excess cholesterol away from tissues back to the liver for removal.", significance:"Higher HDL levels are generally considered more favorable for cardiovascular health, unlike LDL and total cholesterol."},
+  ldl: {what:"LDL (\"bad\") Cholesterol carries cholesterol to tissues throughout the body and can contribute to arterial plaque buildup when elevated.", significance:"It's one of the primary targets used in assessing and managing cardiovascular risk."},
+  non_hdl: {what:"Non-HDL Cholesterol is total cholesterol minus HDL, capturing all the potentially artery-clogging cholesterol types in one number.", significance:"Some guidelines consider it a useful cardiovascular risk marker, particularly when triglycerides are elevated."},
+  vldl: {what:"VLDL (Very Low-Density Lipoprotein) mainly carries triglycerides through the bloodstream.", significance:"It's usually calculated from the triglyceride level rather than measured directly, and moves in the same direction as triglycerides."},
+  chol_hdl_ratio: {what:"The Total Cholesterol/HDL Ratio compares total cholesterol to the \"good\" HDL fraction.", significance:"Some clinicians use this ratio, alongside individual values, as an additional way to gauge cardiovascular risk."},
+  ldl_hdl_ratio: {what:"The LDL/HDL Ratio compares the \"bad\" and \"good\" cholesterol fractions to each other.", significance:"Like the total cholesterol/HDL ratio, it's used by some clinicians as a supplementary cardiovascular risk indicator."},
+
+  t3_total: {what:"Total T3 (Triiodothyronine) measures one of the two main hormones produced by the thyroid gland.", significance:"It's typically interpreted alongside T4 and TSH rather than alone, since thyroid function is assessed as a group of related tests."},
+  t4_total: {what:"Total T4 (Thyroxine) measures the other main hormone produced by the thyroid gland.", significance:"Like T3, it's usually reviewed together with TSH to build a full picture of thyroid function."},
+  tsh: {what:"TSH (Thyroid Stimulating Hormone) is made by the pituitary gland and signals the thyroid to produce more or less hormone.", significance:"It's often the first and most sensitive test used to screen for an underactive or overactive thyroid, since it responds before T3/T4 levels visibly shift."},
+  free_t3: {what:"Free T3 measures the portion of T3 hormone that's unbound and biologically active in the blood.", significance:"It's considered a more direct reflection of active thyroid hormone than total T3, which includes hormone bound to carrier proteins."},
+  free_t4: {what:"Free T4 measures the portion of T4 hormone that's unbound and biologically active.", significance:"It's less affected than total T4 by conditions that change carrier protein levels, such as pregnancy."},
+
+  fasting_glucose: {what:"Fasting Glucose measures blood sugar after a period without food, typically 8–12 hours.", significance:"It's one of the standard tests used to screen for and monitor prediabetes and diabetes."},
+  random_glucose: {what:"Random Glucose measures blood sugar at any time of day, regardless of when you last ate.", significance:"It's a less standardized snapshot than fasting glucose, but useful for a quick check or in combination with other tests."},
+  pp_glucose: {what:"Post-Prandial (after-meal) Glucose measures blood sugar a set time after eating, usually 2 hours.", significance:"It shows how the body handles a glucose/food load, which fasting glucose alone doesn't capture."},
+  hba1c: {what:"HbA1c reflects average blood sugar levels over roughly the past 2–3 months, based on how much sugar has attached to red blood cells.", significance:"It's a key test for diagnosing and monitoring diabetes and prediabetes, since it isn't affected by short-term factors like a single meal."},
+  eag: {what:"Estimated Average Glucose (eAG) translates the HbA1c percentage into the same units used for daily glucose readings, for easier comparison.", significance:"It's a conversion of HbA1c, not a separate measurement, meant to make the HbA1c result more intuitive."},
+
+  vitamin_b12: {what:"Vitamin B12 is essential for nerve function, DNA synthesis, and red blood cell production.", significance:"Low levels are associated with fatigue, nerve symptoms, and a type of anemia with unusually large red blood cells; B12 comes mainly from animal foods, so deficiency is more common with plant-based diets, certain medications, or absorption issues."},
+  vitamin_d: {what:"Vitamin D helps the body absorb calcium and supports bone health, immune function, and muscle function.", significance:"Low levels are very common and can relate to limited sun exposure, diet, skin tone, or absorption issues; it's obtained through sun exposure, some foods, and supplements."},
+  iron: {what:"Serum Iron measures the iron currently circulating in blood, bound to a transport protein.", significance:"It's one part of a broader \"iron studies\" panel (with TIBC, UIBC, and transferrin saturation) used together to assess iron status, since serum iron alone can fluctuate through the day."},
+  tibc: {what:"TIBC (Total Iron Binding Capacity) measures the blood's total capacity to carry iron, reflecting how much of the transport protein transferrin is available.", significance:"TIBC tends to rise when the body's iron stores are low, as part of the body's attempt to capture more iron."},
+  uibc: {what:"UIBC (Unsaturated Iron Binding Capacity) measures the portion of iron-carrying capacity not currently occupied by iron.", significance:"It's used together with serum iron and TIBC to calculate transferrin saturation and build a fuller picture of iron status."},
+  transferrin_sat: {what:"Transferrin Saturation is the percentage of the blood's iron-carrying capacity that's actually occupied by iron.", significance:"It's often considered one of the more informative iron-status numbers, since it accounts for both how much iron is present and how much capacity is available."},
+  ferritin: {what:"Ferritin reflects the body's stored iron reserves, not just the iron currently circulating.", significance:"Low ferritin is often considered one of the earliest and most specific indicators of iron deficiency, sometimes appearing before hemoglobin drops."},
+  folate: {what:"Folate (Vitamin B9) is essential for making new cells and DNA, and works closely with vitamin B12.", significance:"Low levels are associated with a type of anemia similar to B12 deficiency, and folate is especially important before and during pregnancy."},
+  magnesium: {what:"Magnesium supports muscle and nerve function, energy production, and bone health.", significance:"Levels can be affected by diet, certain medications, digestive conditions, or kidney function."},
+
+  urine_ph: {what:"Urine pH measures how acidic or alkaline the urine is.", significance:"It can be influenced by diet, hydration, and certain medical conditions, and is one small part of a broader urinalysis picture."},
+  urine_sg: {what:"Urine Specific Gravity measures how concentrated the urine is, reflecting hydration status and kidney concentrating ability.", significance:"Very high or low values can relate to hydration level or, less commonly, kidney function."},
+  urine_protein: {what:"Urine Protein testing checks for protein that shouldn't normally be present in urine in meaningful amounts.", significance:"Its presence can relate to kidney function and is often followed up with further testing if it appears unexpectedly."},
+  urine_glucose: {what:"Urine Glucose testing checks for sugar spilling into the urine, which doesn't normally happen at typical blood sugar levels.", significance:"Its presence is commonly associated with elevated blood glucose levels, such as in diabetes."},
+  urine_ketones: {what:"Urine Ketones testing checks for byproducts of fat breakdown, which appear when the body relies more heavily on fat for energy.", significance:"They can appear with fasting, low-carbohydrate eating, or, more seriously, uncontrolled diabetes."},
+  urobilinogen: {what:"Urobilinogen is a byproduct of bilirubin processing that normally appears in small amounts in urine.", significance:"Unusual levels can relate to liver function or red blood cell breakdown."},
+  pus_cells: {what:"Pus Cells (white blood cells) in urine can indicate the immune system responding to irritation or infection in the urinary tract.", significance:"Higher-than-typical counts are commonly associated with urinary tract infection, though the whole urinalysis picture is usually considered together."},
+
+  crp: {what:"CRP (C-Reactive Protein) is produced by the liver in response to inflammation anywhere in the body.", significance:"Like ESR, it's a general, non-specific marker — elevated levels can relate to infection, injury, chronic inflammatory conditions, or even recent vigorous exercise, and are rarely conclusive on their own."},
+};
+
+// ---------- Marker → tracked nutrient links (for dietitian notes; zero API cost) ----------
+// Deliberately limited to well-established, textbook-level connections
+// (the same kind already printed in the "Comments" sections of real lab
+// reports) and only to nutrients this app already tracks real food data
+// for. "direction" is which flag on the marker triggers the note.
+const MARKER_NUTRIENT_LINKS = {
+  hemoglobin: { direction:'Low', nutrients:['iron','vitB12','folate'] },
+  iron: { direction:'Low', nutrients:['iron'] },
+  ferritin: { direction:'Low', nutrients:['iron'] },
+  transferrin_sat: { direction:'Low', nutrients:['iron'] },
+  vitamin_b12: { direction:'Low', nutrients:['vitB12'] },
+  vitamin_d: { direction:'Low', nutrients:['vitD'] },
+  calcium: { direction:'Low', nutrients:['calcium'] },
+  folate: { direction:'Low', nutrients:['folate'] },
+  magnesium: { direction:'Low', nutrients:['magnesium'] },
+  potassium: { direction:'Low', nutrients:['potassium'] },
+  sodium: { direction:'High', nutrients:['sodium'] },
+};
+
+// Shared food suggestions per tracked nutrient (reused from the Nutrient Gap
+// insight's own logic, kept here so the medical side can use it with zero
+// extra API calls).
+const NUTRIENT_FOOD_SUGGESTIONS = {
+  iron: ['Spinach, cooked (1 cup)','Dal / lentil curry (1 cup)'],
+  vitB12: ['Curd / plain yogurt (1 cup)','Milk, whole (1 cup)'],
+  vitD: ['Fish, grilled (100g)','Egg, boiled (1 large)'],
+  calcium: ['Ragi porridge (1 cup)','Curd / plain yogurt (1 cup)'],
+  folate: ['Chole / chickpea curry (1 cup)','Spinach, cooked (1 cup)'],
+  magnesium: ['Quinoa, cooked (1 cup)','Almonds (28g, ~23 nuts)'],
+  potassium: ['Banana (1 medium)','Potato, boiled (1 medium)'],
+};
+
+
 function normalizeMarkerText(s){
   return (s || '').toLowerCase()
     .replace(/[()%,]/g, ' ')
@@ -2182,6 +2339,7 @@ function renderMedicalTrends(reports){
   const card = document.getElementById('medicalTrendsCard');
   const trendData = buildTrendData(reports);
   const entries = Object.entries(trendData);
+  renderDietitianNotes(trendData);
   if(entries.length === 0){ card.style.display = 'none'; return; }
   card.style.display = 'block';
 
@@ -2222,13 +2380,14 @@ function renderTrendCards(entries, filterCategory){
       <div class="thead">
         <div>
           <div class="tname">${entry.label}</div>
-          <div class="tcat">${entry.category}</div>
+          <div class="tcat">${entry.category} · <span class="explain-btn" data-key="${key}" data-name="${entry.label.replace(/"/g,'&quot;')}">What is this test?</span></div>
         </div>
         <div class="tlatest">
           <div class="v">${latest.rawValue}${latest.unit ? ' '+latest.unit : ''}</div>
           ${delta !== null ? `<div class="delta">${delta > 0 ? '▲' : delta < 0 ? '▼' : '—'} ${Math.abs(delta).toFixed(2)} since previous</div>` : ''}
         </div>
       </div>
+      <div class="explain-panel"></div>
       ${renderRangeBar(latest, rangeBounds)}
       ${points.length > 1
         ? `<div class="trend-chart-mini">${renderMiniLineChart(points)}</div>`
@@ -2249,7 +2408,140 @@ function renderTrendCards(entries, filterCategory){
       table.classList.toggle('open');
       toggle.textContent = table.classList.contains('open') ? 'Hide readings' : 'Show all readings';
     };
+    const explainBtn = card.querySelector('.explain-btn');
+    explainBtn.onclick = ()=> showMarkerExplanation(explainBtn.dataset.key, explainBtn.dataset.name, card.querySelector('.explain-panel'), explainBtn);
   });
+}
+
+// ---------- "What is this test?" — static first, cached live fallback second ----------
+async function showMarkerExplanation(key, label, panelEl, btnEl){
+  if(panelEl.classList.contains('open')){
+    panelEl.classList.remove('open');
+    panelEl.style.display = 'none';
+    return;
+  }
+  panelEl.style.display = 'block';
+  panelEl.classList.add('open');
+
+  // Static library — instant, zero API cost, covers every recognized marker.
+  if(MARKER_EDUCATION[key]){
+    renderExplanation(panelEl, MARKER_EDUCATION[key]);
+    return;
+  }
+
+  // Unrecognized marker — check the shared cache before ever calling Claude,
+  // so the same unusual test name is only ever explained once, for anyone.
+  panelEl.innerHTML = '<div class="single-note">Looking this up…</div>';
+  const normKey = key.startsWith('other:') ? key.slice(6) : normalizeMarkerText(label);
+  try{
+    const { data: cached } = await db.from('marker_explanations').select('*').eq('normalized_key', normKey).maybeSingle();
+    if(cached && cached.explanation){
+      renderExplanation(panelEl, cached.explanation);
+      return;
+    }
+  } catch(e){ /* fall through to live lookup */ }
+
+  try{
+    const res = await fetch('/api/explain-marker', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ markerName: label })
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+    renderExplanation(panelEl, data);
+    db.from('marker_explanations').upsert({ normalized_key: normKey, marker_name: label, explanation: data }).then(()=>{});
+  } catch(e){
+    console.error('Explain-marker error:', e);
+    panelEl.innerHTML = '<div class="single-note" style="color:var(--rust);">Couldn\'t look this one up right now — try again in a moment.</div>';
+  }
+}
+
+function renderExplanation(panelEl, content){
+  panelEl.innerHTML = `
+    <div class="explain-body">
+      <div class="explain-row"><strong>What it is:</strong> ${content.what}</div>
+      <div class="explain-row"><strong>General significance:</strong> ${content.significance}</div>
+      <div class="explain-disclaimer">General educational information, not personalized medical advice — always discuss your own results with your doctor.</div>
+    </div>`;
+}
+
+// ---------- Notes for your dietitian (zero API cost — reuses tracked nutrient data) ----------
+function renderDietitianNotes(trendData){
+  const card = document.getElementById('dietitianNotesCard');
+  const listEl = document.getElementById('dietitianNotesList');
+  const notes = [];
+
+  Object.entries(MARKER_NUTRIENT_LINKS).forEach(([markerKey, link])=>{
+    const entry = trendData[markerKey];
+    if(!entry) return;
+    const latest = entry.points[entry.points.length - 1];
+    if(!latest || latest.flag !== link.direction) return;
+    notes.push({ markerLabel: entry.label, direction: link.direction, nutrients: link.nutrients });
+  });
+
+  if(notes.length === 0){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  listEl.innerHTML = notes.map((n)=>{
+    const nutrientLabels = n.nutrients.map(k => (microDefs.find(d=>d.key===k)||{}).label || k);
+    if(n.direction === 'High'){
+      return `<div class="dnote-card">
+        <div class="dtitle">Ask your dietitian: worth reviewing ${nutrientLabels.join(' / ').toLowerCase()} intake?</div>
+        <div class="dbody">Your ${n.markerLabel} reading sits above the range printed on your report. ${nutrientLabels[0]} intake is commonly discussed when this comes up — worth asking your dietitian or doctor whether it's relevant for you.</div>
+      </div>`;
+    }
+    const foodSet = [];
+    n.nutrients.forEach(k=> (NUTRIENT_FOOD_SUGGESTIONS[k] || []).forEach(f=>{ if(!foodSet.includes(f)) foodSet.push(f); }));
+    return `<div class="dnote-card">
+      <div class="dtitle">Ask your dietitian: could more ${nutrientLabels.join('/').toLowerCase()}-rich foods help?</div>
+      <div class="dbody">Your ${n.markerLabel} reading sits below the range printed on your report. ${nutrientLabels.join(', ')} ${n.nutrients.length>1?'are':'is'} commonly discussed alongside this — worth asking whether adding more ${nutrientLabels.join(' or ').toLowerCase()}-rich foods could help, such as:</div>
+      <div class="dfoods">${foodSet.join(' · ')}</div>
+      <button class="btn ghost small recipe-btn" data-foods='${JSON.stringify(foodSet).replace(/'/g,'&#39;')}'>Get recipe ideas</button>
+      <div class="recipe-panel"></div>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.recipe-btn').forEach(btn=>{
+    btn.onclick = ()=>{
+      const panel = btn.nextElementSibling;
+      const foods = JSON.parse(btn.dataset.foods.replace(/&#39;/g,"'"));
+      fetchRecipeIdeas(foods, panel, btn);
+    };
+  });
+}
+
+async function fetchRecipeIdeas(foods, panelEl, btnEl){
+  if(panelEl.classList.contains('open')){
+    panelEl.classList.remove('open');
+    panelEl.style.display = 'none';
+    return;
+  }
+  panelEl.style.display = 'block';
+  panelEl.classList.add('open');
+  panelEl.innerHTML = '<div class="single-note">Coming up with some ideas…</div>';
+  btnEl.disabled = true;
+  try{
+    const res = await fetch('/api/recipe-ideas', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ foods })
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+    panelEl.innerHTML = (data.recipes || []).map(r=>`
+      <div class="recipe-item">
+        <div class="rtitle">${r.title}</div>
+        <div class="rmeta">${r.time || ''}</div>
+        <ul>${(r.ingredients||[]).map(i=>`<li>${i}</li>`).join('')}</ul>
+        <ol>${(r.steps||[]).map(s=>`<li>${s}</li>`).join('')}</ol>
+      </div>`).join('') || '<div class="single-note">No ideas came back — try again.</div>';
+  } catch(e){
+    console.error('Recipe ideas error:', e);
+    panelEl.innerHTML = '<div class="single-note" style="color:var(--rust);">Couldn\'t get recipe ideas right now — try again in a moment.</div>';
+  } finally {
+    btnEl.disabled = false;
+  }
 }
 
 // ---------- Wearables mock ----------
