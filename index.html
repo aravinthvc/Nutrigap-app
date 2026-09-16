@@ -900,7 +900,7 @@
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Notes for your dietitian</h3>
         <div class="disclaimer" style="margin-top:0;">
           <strong>Suggestions to raise, not instructions to follow</strong>
-          These are talking points, phrased the way a note to your dietitian might read — based on values from your reports that fall outside their printed range and are commonly discussed alongside certain nutrients. This app isn't deciding anything for you; it's flagging what might be worth asking about.
+          These are talking points, phrased the way a note to your dietitian might read — based on values from your reports that fall outside their printed range and have an established, general connection to diet. This app isn't deciding anything for you, and it doesn't flag every out-of-range value — only the ones with a real dietary angle worth raising, like blood sugar, lipids, or specific nutrients.
         </div>
         <div id="dietitianNotesList" style="margin-top:12px;"></div>
       </div>
@@ -2188,7 +2188,32 @@ const MARKER_NUTRIENT_LINKS = {
   folate: { direction:'Low', nutrients:['folate'] },
   magnesium: { direction:'Low', nutrients:['magnesium'] },
   potassium: { direction:'Low', nutrients:['potassium'] },
-  sodium: { direction:'High', nutrients:['sodium'] },
+};
+
+// Broader, well-established diet-relevant markers that don't map to one
+// specific food the way a single nutrient deficiency does (blood sugar,
+// lipids, uric acid, thyroid/iodine, kidney-related protein & hydration).
+// These get a general "ask about this topic" note — deliberately without
+// pinning to specific foods, since oversimplifying something like elevated
+// triglycerides to "eat this one food" would be less honest, not more
+// helpful. No recipe button on these for the same reason.
+const MARKER_DIET_TOPICS = {
+  sodium: { direction:'High', topic:'sodium/salt intake' },
+  hba1c: { direction:'High', topic:'carbohydrate and sugar intake patterns' },
+  fasting_glucose: { direction:'High', topic:'carbohydrate and sugar intake patterns' },
+  random_glucose: { direction:'High', topic:'carbohydrate and sugar intake patterns' },
+  pp_glucose: { direction:'High', topic:'carbohydrate and sugar intake patterns' },
+  eag: { direction:'High', topic:'carbohydrate and sugar intake patterns' },
+  total_cholesterol: { direction:'High', topic:'dietary fat and fiber patterns' },
+  ldl: { direction:'High', topic:'dietary fat and fiber patterns' },
+  non_hdl: { direction:'High', topic:'dietary fat and fiber patterns' },
+  triglycerides: { direction:'High', topic:'dietary fat, sugar, and alcohol intake' },
+  hdl: { direction:'Low', topic:'dietary fat quality and physical activity' },
+  uric_acid: { direction:'High', topic:'purine-rich foods (such as red meat, organ meats, and certain seafood) and alcohol intake' },
+  urea: { direction:'High', topic:'protein intake and hydration' },
+  bun: { direction:'High', topic:'protein intake and hydration' },
+  creatinine: { direction:'High', topic:'hydration and protein intake' },
+  tsh: { direction:'High', topic:'iodine intake' },
 };
 
 // Shared food suggestions per tracked nutrient (reused from the Nutrient Gap
@@ -2470,20 +2495,29 @@ function renderExplanation(panelEl, content){
 function renderDietitianNotes(trendData){
   const card = document.getElementById('dietitianNotesCard');
   const listEl = document.getElementById('dietitianNotesList');
-  const notes = [];
+  const foodNotes = [];
+  const topicNotes = [];
 
   Object.entries(MARKER_NUTRIENT_LINKS).forEach(([markerKey, link])=>{
     const entry = trendData[markerKey];
     if(!entry) return;
     const latest = entry.points[entry.points.length - 1];
     if(!latest || latest.flag !== link.direction) return;
-    notes.push({ markerLabel: entry.label, direction: link.direction, nutrients: link.nutrients });
+    foodNotes.push({ markerLabel: entry.label, direction: link.direction, nutrients: link.nutrients });
   });
 
-  if(notes.length === 0){ card.style.display = 'none'; return; }
+  Object.entries(MARKER_DIET_TOPICS).forEach(([markerKey, link])=>{
+    const entry = trendData[markerKey];
+    if(!entry) return;
+    const latest = entry.points[entry.points.length - 1];
+    if(!latest || latest.flag !== link.direction) return;
+    topicNotes.push({ markerLabel: entry.label, direction: link.direction, topic: link.topic });
+  });
+
+  if(foodNotes.length === 0 && topicNotes.length === 0){ card.style.display = 'none'; return; }
   card.style.display = 'block';
 
-  listEl.innerHTML = notes.map((n)=>{
+  const foodNotesHtml = foodNotes.map((n)=>{
     const nutrientLabels = n.nutrients.map(k => (microDefs.find(d=>d.key===k)||{}).label || k);
     if(n.direction === 'High'){
       return `<div class="dnote-card">
@@ -2501,6 +2535,16 @@ function renderDietitianNotes(trendData){
       <div class="recipe-panel"></div>
     </div>`;
   }).join('');
+
+  const topicNotesHtml = topicNotes.map((n)=>{
+    const direction = n.direction === 'High' ? 'above' : 'below';
+    return `<div class="dnote-card">
+      <div class="dtitle">Ask your dietitian: worth discussing ${n.topic}?</div>
+      <div class="dbody">Your ${n.markerLabel} reading sits ${direction} the range printed on your report. ${n.topic.charAt(0).toUpperCase()+n.topic.slice(1)} is commonly part of the conversation when this comes up — worth raising with your dietitian or doctor to see whether it's relevant for you.</div>
+    </div>`;
+  }).join('');
+
+  listEl.innerHTML = foodNotesHtml + topicNotesHtml;
 
   listEl.querySelectorAll('.recipe-btn').forEach(btn=>{
     btn.onclick = ()=>{
