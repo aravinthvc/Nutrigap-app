@@ -437,6 +437,37 @@
     background:var(--rust-wash); border-radius:var(--radius-s);
     padding:10px 12px; margin-top:10px; font-size:13px; color:#5c2c0d;
   }
+
+  /* ---- Medical trends ---- */
+  .trend-card{
+    border:1px solid var(--line); border-radius:var(--radius-m);
+    padding:16px 18px; margin-top:12px;
+  }
+  .trend-card .thead{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .trend-card .tname{ font-weight:500; font-size:14.5px; }
+  .trend-card .tcat{ font-size:11px; color:var(--ink-faint); margin-top:1px; }
+  .trend-card .tlatest{ text-align:right; }
+  .trend-card .tlatest .v{ font-family:'IBM Plex Mono', monospace; font-size:15px; font-weight:500; }
+  .trend-card .tlatest .delta{ font-size:11.5px; color:var(--ink-soft); margin-top:1px; }
+  .trend-card .single-note{ font-size:12px; color:var(--ink-faint); margin-top:10px; }
+  .range-bar-wrap{ margin-top:12px; }
+  .range-bar-track{ position:relative; height:10px; border-radius:6px; background:var(--line-soft); overflow:visible; }
+  .range-bar-zone{ position:absolute; top:0; bottom:0; background:var(--teal-wash); border-radius:6px; }
+  .range-bar-dot{
+    position:absolute; top:50%; width:12px; height:12px; border-radius:50%;
+    transform:translate(-50%,-50%); border:2px solid #fff; box-shadow:0 0 0 1px rgba(0,0,0,.15);
+  }
+  .range-bar-dot.met{ background:var(--teal); }
+  .range-bar-dot.short{ background:var(--rust); }
+  .range-bar-dot.over{ background:var(--rust); }
+  .range-bar-dot.unknown{ background:var(--ink-faint); }
+  .range-bar-labels{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--ink-faint); margin-top:4px; }
+  .trend-chart-mini{ margin-top:14px; }
+  .trend-table-toggle{ font-size:12px; color:var(--teal-deep); cursor:pointer; margin-top:10px; display:inline-block; }
+  .trend-detail-table{ display:none; margin-top:10px; width:100%; border-collapse:collapse; font-size:12.5px; }
+  .trend-detail-table.open{ display:table; }
+  .trend-detail-table th, .trend-detail-table td{ padding:6px 8px; border-bottom:1px solid var(--line-soft); text-align:left; }
+  .range-differs-note{ font-size:11px; color:var(--steel); margin-top:8px; }
 </style>
 </head>
 <body>
@@ -831,6 +862,17 @@
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your saved reports</h3>
         <div id="savedReportsList"></div>
         <div class="empty" id="savedReportsEmpty">No reports saved yet.</div>
+      </div>
+
+      <div class="card" id="medicalTrendsCard" style="margin-top:20px; display:none;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">How your markers are trending</h3>
+        <div class="disclaimer" style="margin-top:0;">
+          <strong>What this is, and isn't</strong>
+          These charts plot the numbers already printed on your saved reports, grouped by name. They show direction and position relative to your most recent report's printed range — nothing here judges whether a change is good, bad, or worth worrying about. Reports from different labs can use different reference ranges or test methods, so an apparent change can reflect that rather than a real change in you. Always discuss trends with your doctor.
+        </div>
+        <div class="segmented" id="trendCategoryGroup" style="margin-top:14px; flex-wrap:wrap;"></div>
+        <div id="medicalTrendsList" style="margin-top:16px;"></div>
+        <div class="empty" id="medicalTrendsEmpty" style="display:none;">Save at least one report with readable values to see trends here.</div>
       </div>
     </section>
 
@@ -1813,6 +1855,7 @@ async function loadSavedReports(){
     .order('created_at', { ascending: false });
   if(error){ console.error('Could not load saved reports:', error.message); return; }
   renderSavedReportsList(data || []);
+  renderMedicalTrends(data || []);
 }
 
 function renderSavedReportsList(reports){
@@ -1907,6 +1950,304 @@ function renderSavedReportsList(reports){
       statusEl.style.color = 'var(--teal-deep)';
       statusEl.textContent = 'Saved.';
       await loadSavedReports();
+    };
+  });
+}
+
+// ---------- Medical trends: grouping, matching, and small-multiple charts ----------
+// Canonical marker taxonomy: maps real-world label variants (different labs
+// word the same test differently) onto one canonical marker, so repeat
+// testing over time can be plotted together even across different labs.
+// Anything not recognized here still groups correctly across repeat visits
+// using its own exact name — it just won't get a friendly category.
+const MARKER_TAXONOMY = [
+  {key:'hemoglobin', label:'Hemoglobin', category:'Hematology', aliases:['hemoglobin','haemoglobin','hb']},
+  {key:'rbc_count', label:'RBC Count', category:'Hematology', aliases:['rbc count','red blood cell count','rbc']},
+  {key:'pcv', label:'PCV (Hematocrit)', category:'Hematology', aliases:['pcv','hematocrit','haematocrit','hct']},
+  {key:'mcv', label:'MCV', category:'Hematology', aliases:['mcv']},
+  {key:'mch', label:'MCH', category:'Hematology', aliases:['mch']},
+  {key:'mchc', label:'MCHC', category:'Hematology', aliases:['mchc']},
+  {key:'rdw', label:'RDW', category:'Hematology', aliases:['rdw cv','rdw']},
+  {key:'wbc_total', label:'Total WBC Count', category:'Hematology', aliases:['total wbc count','wbc count','total leucocyte count','tlc']},
+  {key:'neutrophils', label:'Neutrophils', category:'Hematology', aliases:['neutrophils']},
+  {key:'lymphocytes', label:'Lymphocytes', category:'Hematology', aliases:['lymphocytes']},
+  {key:'monocytes', label:'Monocytes', category:'Hematology', aliases:['monocytes']},
+  {key:'eosinophils', label:'Eosinophils', category:'Hematology', aliases:['eosinophils']},
+  {key:'basophils', label:'Basophils', category:'Hematology', aliases:['basophils']},
+  {key:'abs_neutrophils', label:'Absolute Neutrophils', category:'Hematology', aliases:['absolute neutrophils']},
+  {key:'abs_lymphocytes', label:'Absolute Lymphocytes', category:'Hematology', aliases:['absolute lymphocytes']},
+  {key:'abs_monocytes', label:'Absolute Monocytes', category:'Hematology', aliases:['absolute monocytes']},
+  {key:'abs_eosinophils', label:'Absolute Eosinophils', category:'Hematology', aliases:['absolute eosinophils']},
+  {key:'abs_basophils', label:'Absolute Basophils', category:'Hematology', aliases:['absolute basophils']},
+  {key:'platelet_count', label:'Platelet Count', category:'Hematology', aliases:['platelet count','platelets']},
+  {key:'mpv', label:'MPV', category:'Hematology', aliases:['mpv']},
+  {key:'esr', label:'ESR', category:'Hematology', aliases:['esr','erythrocyte sedimentation rate']},
+
+  {key:'urea', label:'Urea', category:'Kidney', aliases:['urea']},
+  {key:'creatinine', label:'Creatinine', category:'Kidney', aliases:['creatinine']},
+  {key:'bun', label:'Blood Urea Nitrogen', category:'Kidney', aliases:['blood urea nitrogen','bun']},
+  {key:'uric_acid', label:'Uric Acid', category:'Kidney', aliases:['uric acid']},
+  {key:'sodium', label:'Sodium', category:'Kidney', aliases:['sodium']},
+  {key:'potassium', label:'Potassium', category:'Kidney', aliases:['potassium']},
+  {key:'chloride', label:'Chloride', category:'Kidney', aliases:['chloride']},
+  {key:'egfr', label:'eGFR', category:'Kidney', aliases:['egfr','estimated gfr','glomerular filtration rate']},
+  {key:'calcium', label:'Calcium', category:'Kidney', aliases:['calcium']},
+  {key:'phosphorus', label:'Phosphorus', category:'Kidney', aliases:['phosphorus','phosphate']},
+
+  {key:'bilirubin_total', label:'Bilirubin, Total', category:'Liver', aliases:['bilirubin total','total bilirubin']},
+  {key:'bilirubin_direct', label:'Bilirubin, Direct', category:'Liver', aliases:['bilirubin direct','direct bilirubin']},
+  {key:'bilirubin_indirect', label:'Bilirubin, Indirect', category:'Liver', aliases:['bilirubin indirect','indirect bilirubin']},
+  {key:'total_protein', label:'Total Protein', category:'Liver', aliases:['total protein']},
+  {key:'albumin', label:'Albumin', category:'Liver', aliases:['albumin']},
+  {key:'globulin', label:'Globulin', category:'Liver', aliases:['globulin']},
+  {key:'ag_ratio', label:'A/G Ratio', category:'Liver', aliases:['a g ratio','albumin globulin ratio']},
+  {key:'sgot_ast', label:'SGOT / AST', category:'Liver', aliases:['sgot ast','sgot','ast']},
+  {key:'sgpt_alt', label:'SGPT / ALT', category:'Liver', aliases:['sgpt alt','sgpt','alt']},
+  {key:'ggt', label:'GGT', category:'Liver', aliases:['ggt','gamma gt']},
+  {key:'alp', label:'Alkaline Phosphatase', category:'Liver', aliases:['alkaline phosphatase','alp']},
+
+  {key:'total_cholesterol', label:'Total Cholesterol', category:'Lipid Profile', aliases:['total cholesterol']},
+  {key:'triglycerides', label:'Triglycerides', category:'Lipid Profile', aliases:['triglycerides']},
+  {key:'hdl', label:'HDL Cholesterol', category:'Lipid Profile', aliases:['hdl cholesterol','hdl']},
+  {key:'ldl', label:'LDL Cholesterol', category:'Lipid Profile', aliases:['ldl cholesterol','ldl']},
+  {key:'non_hdl', label:'Non-HDL Cholesterol', category:'Lipid Profile', aliases:['non hdl cholesterol','non hdl']},
+  {key:'vldl', label:'VLDL', category:'Lipid Profile', aliases:['vldl']},
+  {key:'chol_hdl_ratio', label:'Total Cholesterol/HDL Ratio', category:'Lipid Profile', aliases:['total cholesterol hdlc ratio','cholesterol hdl ratio']},
+  {key:'ldl_hdl_ratio', label:'LDL/HDL Ratio', category:'Lipid Profile', aliases:['ldlc hdlc ratio','ldl hdl ratio']},
+
+  {key:'t3_total', label:'T3, Total', category:'Thyroid', aliases:['t3 total','total t3']},
+  {key:'t4_total', label:'T4, Total', category:'Thyroid', aliases:['t4 total','total t4']},
+  {key:'tsh', label:'TSH', category:'Thyroid', aliases:['thyroid stimulating hormone tsh','thyroid stimulating hormone','tsh']},
+  {key:'free_t3', label:'Free T3', category:'Thyroid', aliases:['free t3','ft3']},
+  {key:'free_t4', label:'Free T4', category:'Thyroid', aliases:['free t4','ft4']},
+
+  {key:'fasting_glucose', label:'Fasting Glucose', category:'Glucose & Metabolic', aliases:['glucose fasting f','fasting glucose','glucose fasting']},
+  {key:'random_glucose', label:'Random Glucose', category:'Glucose & Metabolic', aliases:['random glucose','glucose random']},
+  {key:'pp_glucose', label:'Post-Prandial Glucose', category:'Glucose & Metabolic', aliases:['pp glucose','post prandial glucose','glucose pp']},
+  {key:'hba1c', label:'HbA1c', category:'Glucose & Metabolic', aliases:['glycosylated hemoglobin hba1c','hba1c','hbaic']},
+  {key:'eag', label:'Estimated Average Glucose', category:'Glucose & Metabolic', aliases:['estimated average glucose','eag']},
+
+  {key:'vitamin_b12', label:'Vitamin B12', category:'Vitamins & Minerals', aliases:['vitamin b12 cyanocobalamin','vitamin b12','vit b12']},
+  {key:'vitamin_d', label:'Vitamin D (25-OH)', category:'Vitamins & Minerals', aliases:['vitamin d 25 hydroxy','vitamin d 25 oh','25 hydroxy vitamin d','vitamin d']},
+  {key:'iron', label:'Iron', category:'Vitamins & Minerals', aliases:['iron']},
+  {key:'tibc', label:'TIBC (Iron Binding Capacity)', category:'Vitamins & Minerals', aliases:['tibc total iron binding capacity','tibc']},
+  {key:'uibc', label:'UIBC', category:'Vitamins & Minerals', aliases:['unsaturated iron binding capacity uibc','uibc']},
+  {key:'transferrin_sat', label:'Transferrin Saturation', category:'Vitamins & Minerals', aliases:['transferrin saturation']},
+  {key:'ferritin', label:'Ferritin', category:'Vitamins & Minerals', aliases:['ferritin']},
+  {key:'folate', label:'Folate', category:'Vitamins & Minerals', aliases:['folate','folic acid']},
+  {key:'magnesium', label:'Magnesium', category:'Vitamins & Minerals', aliases:['magnesium']},
+
+  {key:'urine_ph', label:'Urine pH', category:'Urinalysis', aliases:['ph urine','urine ph']},
+  {key:'urine_sg', label:'Urine Specific Gravity', category:'Urinalysis', aliases:['specific gravity urine','urine specific gravity']},
+  {key:'urine_protein', label:'Urine Protein', category:'Urinalysis', aliases:['proteins','urine protein']},
+  {key:'urine_glucose', label:'Urine Glucose', category:'Urinalysis', aliases:['glucose urine','urine glucose']},
+  {key:'urine_ketones', label:'Urine Ketones', category:'Urinalysis', aliases:['ketones']},
+  {key:'urobilinogen', label:'Urobilinogen', category:'Urinalysis', aliases:['urobilinogen']},
+  {key:'pus_cells', label:'Pus Cells', category:'Urinalysis', aliases:['pus cells']},
+
+  {key:'crp', label:'CRP', category:'Inflammation', aliases:['c reactive protein','crp','hs crp']},
+];
+
+function normalizeMarkerText(s){
+  return (s || '').toLowerCase()
+    .replace(/[()%,]/g, ' ')
+    .replace(/[-_.\/]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function matchCanonicalMarker(rawName){
+  const norm = normalizeMarkerText(rawName);
+  for(const entry of MARKER_TAXONOMY){
+    if(entry.aliases.includes(norm)) return entry;
+  }
+  const stripFiller = s => s.replace(/\b(total|count|level)\b/g,'').replace(/\s+/g,' ').trim();
+  const stripped = stripFiller(norm);
+  for(const entry of MARKER_TAXONOMY){
+    if(entry.aliases.some(a => stripFiller(a) === stripped)) return entry;
+  }
+  // Word-boundary containment pass — catches cases like "Estimated Average
+  // Glucose (eAG)" normalizing to "estimated average glucose eag", which
+  // isn't an exact match to either alias but clearly contains one.
+  for(const entry of MARKER_TAXONOMY){
+    if(entry.aliases.some(a => new RegExp('\\b'+a.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'\\b').test(norm))) return entry;
+  }
+  // Unrecognized — still group correctly across repeat visits by using the
+  // exact normalized name as the key, just without a friendly category.
+  return { key: 'other:' + norm, label: rawName, category: 'Other' };
+}
+
+function parseReportDate(text){
+  if(!text) return null;
+  const monthMap = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+  let m = text.match(/(\d{1,2})[\-\s]([A-Za-z]{3,})[\-\s](\d{4})/);
+  if(m){
+    const mon = monthMap[m[2].toLowerCase().slice(0,3)];
+    if(mon !== undefined) return new Date(+m[3], mon, +m[1]);
+  }
+  m = text.match(/(\d{1,2})[.\/](\d{1,2})[.\/](\d{4})/);
+  if(m) return new Date(+m[3], +m[2]-1, +m[1]);
+  m = text.match(/(\d{4})-(\d{1,2})-(\d{1,2})/);
+  if(m) return new Date(+m[1], +m[2]-1, +m[3]);
+  return null;
+}
+
+function parseRangeBounds(rangeText){
+  if(!rangeText) return null;
+  // No leading minus sign: lab reference values are never negative, and
+  // treating one as optional caused "13.5-18.0" to be misread as
+  // "13.5" and "-18.0" (the hyphen is a range separator, not a sign).
+  const nums = (rangeText.match(/\d+(\.\d+)?/g) || []).map(Number);
+  if(nums.length === 0) return null;
+  if(nums.length === 1){
+    if(rangeText.includes('<')) return { lo: null, hi: nums[0] };
+    if(rangeText.includes('>')) return { lo: nums[0], hi: null };
+    return null;
+  }
+  // Multi-number text (e.g. a male/female split, or several age brackets) —
+  // take the overall min/max as an approximate visual envelope, since we
+  // can't always tell which specific bracket applies. The dot's color still
+  // reflects the flag Claude already determined against the correct bracket.
+  return { lo: Math.min(...nums), hi: Math.max(...nums) };
+}
+
+function buildTrendData(reports){
+  const byKey = {};
+  reports.forEach(r=>{
+    const sortDate = parseReportDate(r.report_date) || new Date(r.created_at);
+    (r.markers || []).forEach(m=>{
+      if(m.value === undefined || m.value === null || m.value === '') return;
+      const numeric = parseFloat(String(m.value).replace(/[^0-9.\-]/g,''));
+      if(isNaN(numeric)) return; // only chart numeric results
+      const match = matchCanonicalMarker(m.name);
+      if(!byKey[match.key]) byKey[match.key] = { label: match.label, category: match.category, points: [] };
+      byKey[match.key].points.push({
+        value: numeric,
+        rawValue: m.value,
+        unit: m.unit,
+        referenceRange: m.referenceRange,
+        flag: m.flag,
+        date: sortDate,
+        dateLabel: r.report_date || new Date(r.created_at).toLocaleDateString(),
+      });
+    });
+  });
+  Object.values(byKey).forEach(entry => entry.points.sort((a,b)=> a.date - b.date));
+  return byKey;
+}
+
+function renderRangeBar(point, rangeBounds){
+  if(!rangeBounds){
+    return '<div class="single-note">No reference range on this report to plot a position against.</div>';
+  }
+  const { lo, hi } = rangeBounds;
+  let pct;
+  if(lo !== null && hi !== null) pct = ((point.value - lo) / (hi - lo)) * 100;
+  else if(hi !== null) pct = (point.value / hi) * 90;
+  else pct = 50;
+  pct = Math.max(-15, Math.min(115, pct));
+  const dotCls = point.flag === 'Low' ? 'short' : point.flag === 'High' ? 'over' : point.flag === 'Normal' ? 'met' : 'unknown';
+  return `<div class="range-bar-wrap">
+    <div class="range-bar-track">
+      <div class="range-bar-zone" style="left:0; right:0;"></div>
+      <div class="range-bar-dot ${dotCls}" style="left:${pct}%;" title="${point.rawValue}${point.unit ? ' '+point.unit : ''}"></div>
+    </div>
+    <div class="range-bar-labels"><span>${lo !== null ? lo : ''}</span><span>${hi !== null ? hi : ''}</span></div>
+  </div>`;
+}
+
+function renderMiniLineChart(points){
+  const w = 280, h = 70, pad = 10;
+  const values = points.map(p=>p.value);
+  const minV = Math.min(...values), maxV = Math.max(...values);
+  const range = (maxV - minV) || 1;
+  const stepX = points.length > 1 ? (w - pad*2) / (points.length - 1) : 0;
+  const coords = points.map((p,i)=>{
+    const x = pad + i*stepX;
+    const y = h - pad - ((p.value - minV) / range) * (h - pad*2);
+    return { x, y, flag: p.flag, raw: p.rawValue, unit: p.unit, dateLabel: p.dateLabel };
+  });
+  const pathD = coords.map((c,i)=> (i===0?'M':'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1)).join(' ');
+  const dots = coords.map(c=>{
+    const color = (c.flag==='Low'||c.flag==='High') ? 'var(--rust)' : c.flag==='Normal' ? 'var(--teal)' : 'var(--ink-faint)';
+    return `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.5" fill="${color}" stroke="#fff" stroke-width="1"><title>${c.dateLabel}: ${c.raw}${c.unit?(' '+c.unit):''}</title></circle>`;
+  }).join('');
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="overflow:visible; display:block;">
+    <path d="${pathD}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5"/>
+    ${dots}
+  </svg>`;
+}
+
+function renderMedicalTrends(reports){
+  const card = document.getElementById('medicalTrendsCard');
+  const trendData = buildTrendData(reports);
+  const entries = Object.entries(trendData);
+  if(entries.length === 0){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const categories = ['All', ...new Set(entries.map(([,v])=>v.category))];
+  const groupEl = document.getElementById('trendCategoryGroup');
+  groupEl.innerHTML = categories.map((c,i)=>`<button data-val="${c}" class="${i===0?'sel':''}">${c}</button>`).join('');
+  groupEl.querySelectorAll('button').forEach(btn=>{
+    btn.onclick = ()=>{
+      groupEl.querySelectorAll('button').forEach(b=>b.classList.remove('sel'));
+      btn.classList.add('sel');
+      renderTrendCards(entries, btn.dataset.val);
+    };
+  });
+  renderTrendCards(entries, 'All');
+}
+
+function renderTrendCards(entries, filterCategory){
+  const listEl = document.getElementById('medicalTrendsList');
+  const emptyEl = document.getElementById('medicalTrendsEmpty');
+  const filtered = entries.filter(([,v]) => filterCategory === 'All' || v.category === filterCategory)
+    .sort((a,b)=> a[1].label.localeCompare(b[1].label));
+  if(filtered.length === 0){
+    listEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  listEl.innerHTML = filtered.map(([key, entry])=>{
+    const points = entry.points;
+    const latest = points[points.length-1];
+    const prev = points.length > 1 ? points[points.length-2] : null;
+    const rangeBounds = parseRangeBounds(latest.referenceRange);
+    const delta = prev !== null ? (latest.value - prev.value) : null;
+    const rangeDiffers = new Set(points.map(p=>p.referenceRange).filter(Boolean)).size > 1;
+
+    return `<div class="trend-card">
+      <div class="thead">
+        <div>
+          <div class="tname">${entry.label}</div>
+          <div class="tcat">${entry.category}</div>
+        </div>
+        <div class="tlatest">
+          <div class="v">${latest.rawValue}${latest.unit ? ' '+latest.unit : ''}</div>
+          ${delta !== null ? `<div class="delta">${delta > 0 ? '▲' : delta < 0 ? '▼' : '—'} ${Math.abs(delta).toFixed(2)} since previous</div>` : ''}
+        </div>
+      </div>
+      ${renderRangeBar(latest, rangeBounds)}
+      ${points.length > 1
+        ? `<div class="trend-chart-mini">${renderMiniLineChart(points)}</div>`
+        : `<div class="single-note">Only one reading saved so far — save another report with this marker to see a trend line.</div>`}
+      ${rangeDiffers ? `<div class="range-differs-note">Reference range differs across your saved reports for this marker — likely different labs or methods. Position above uses your most recent report's range.</div>` : ''}
+      <span class="trend-table-toggle">Show all readings</span>
+      <table class="trend-detail-table">
+        <thead><tr><th>Date</th><th>Value</th><th>Reference range</th><th>Status</th></tr></thead>
+        <tbody>${points.map(p=>`<tr><td>${p.dateLabel}</td><td>${p.rawValue}${p.unit?' '+p.unit:''}</td><td>${p.referenceRange || '—'}</td><td>${p.flag}</td></tr>`).join('')}</tbody>
+      </table>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.trend-card').forEach(card=>{
+    const toggle = card.querySelector('.trend-table-toggle');
+    const table = card.querySelector('.trend-detail-table');
+    toggle.onclick = ()=>{
+      table.classList.toggle('open');
+      toggle.textContent = table.classList.contains('open') ? 'Hide readings' : 'Show all readings';
     };
   });
 }
