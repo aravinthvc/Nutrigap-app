@@ -270,6 +270,10 @@
   .parse-item .pqty{ width:56px; padding:5px 7px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:inherit; }
   .parse-item.nomatch .pname{ color:var(--rust); }
   .parse-item .praw{ font-size:12px; color:var(--ink-faint); display:block; }
+  .fuzzy-badge{
+    display:inline-block; font-size:10.5px; font-weight:500; color:var(--rust); background:var(--rust-wash);
+    padding:1px 7px; border-radius:20px; margin-left:8px; vertical-align:middle;
+  }
 
   /* Gap bars */
   .gap-row{ margin-bottom:18px; }
@@ -1563,15 +1567,65 @@ async function renderStreakBanner(){
 // dishes and phrasing outside the database.
 function escapeRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
 
+// Plain edit distance — used only as a fallback when no exact (or simple
+// plural) match is found, and only to catch typos/near-misses of a food
+// that's genuinely in the database. It never guesses a *different* food.
+function levenshtein(a, b){
+  const m = a.length, n = b.length;
+  const dp = Array.from({length: m+1}, ()=> new Array(n+1).fill(0));
+  for(let i=0;i<=m;i++) dp[i][0] = i;
+  for(let j=0;j<=n;j++) dp[0][j] = j;
+  for(let i=1;i<=m;i++){
+    for(let j=1;j<=n;j++){
+      dp[i][j] = a[i-1]===b[j-1] ? dp[i-1][j-1] : 1 + Math.min(dp[i-1][j], dp[i][j-1], dp[i-1][j-1]);
+    }
+  }
+  return dp[m][n];
+}
+
+const MATCH_STOPWORDS = new Set(['a','an','of','the','small','medium','large','bowl','bowls','cup','cups','spoon','spoons','tablespoon','tablespoons','teaspoon','teaspoons','piece','pieces','serving','servings','glass','glasses','plate','plates','some','with','and']);
+function coreWords(phraseLower){
+  return phraseLower.split(/\s+/).map(w=>w.replace(/[.,!]/g,'')).filter(w => w.length > 2 && !MATCH_STOPWORDS.has(w));
+}
+
+// Fuzzy fallback: only fires when exact matching finds nothing, and only
+// accepts a very close spelling match (short edit distance relative to
+// word length) — close enough to catch a typo or unusual plural, not
+// close enough to substitute in an unrelated food.
+function fuzzyFoodMatch(phraseLower){
+  const words = coreWords(phraseLower);
+  if(words.length === 0) return null;
+  let best = null, bestScore = 0;
+  FOODS.forEach(f=>{
+    f.keywords.forEach(kw=>{
+      kw.split(/\s+/).forEach(kwWord=>{
+        if(kwWord.length < 4) return;
+        words.forEach(w=>{
+          if(Math.abs(w.length - kwWord.length) > 2) return;
+          const dist = levenshtein(w, kwWord);
+          const score = 1 - dist / Math.max(w.length, kwWord.length);
+          if(score >= 0.75 && score > bestScore){ bestScore = score; best = f; }
+        });
+      });
+    });
+  });
+  return best;
+}
+
 function findFoodMatch(phraseLower){
   let best = null, bestLen = 0;
   FOODS.forEach(f=>{
     f.keywords.forEach(kw=>{
-      const re = new RegExp('\\b'+escapeRe(kw)+'\\b','i');
+      // Allow a simple plural suffix on the keyword ("idli" also matches "idlis") —
+      // this is still the same food, not a guess at a different one.
+      const re = new RegExp('\\b'+escapeRe(kw)+'(s|es)?\\b','i');
       if(re.test(phraseLower) && kw.length > bestLen){ best = f; bestLen = kw.length; }
     });
   });
-  return best;
+  if(best) return { food: best, fuzzy: false };
+
+  const fuzzy = fuzzyFoodMatch(phraseLower);
+  return fuzzy ? { food: fuzzy, fuzzy: true } : null;
 }
 
 const WORD_NUMBERS = {a:1, an:1, one:1, two:2, three:3, four:4, five:5, six:6, half:0.5, couple:2, few:3};
@@ -1593,12 +1647,12 @@ function parsePhrase(raw){
       if(new RegExp('\\b'+word+'\\b','i').test(phrase)){ qty = val; break; }
     }
   }
-  const food = findFoodMatch(phrase);
+  const match = findFoodMatch(phrase);
   let meal = null;
   for(const mk of MEAL_KEYWORDS){
     if(mk.re.test(phrase)){ meal = mk.meal; break; }
   }
-  return { raw: raw.trim(), qty, food, meal };
+  return { raw: raw.trim(), qty, food: match ? match.food : null, fuzzy: match ? match.fuzzy : false, meal };
 }
 
 function parseTranscript(text){
@@ -1698,6 +1752,13 @@ function renderParseReview(){
       return `<div class="parse-item nomatch">
         <input type="checkbox" disabled>
         <span class="pname">Couldn't match a food<span class="praw">"${p.raw}" — try the search box above, or it may be outside the database</span></span>
+      </div>`;
+    }
+    if(p.fuzzy){
+      return `<div class="parse-item" data-i="${i}">
+        <input type="checkbox">
+        <span class="pname">≈ ${p.food.name}<span class="fuzzy-badge">closest match — confirm</span><span class="praw">heard: "${p.raw}" · ${MEAL_LABELS[p.meal]}</span></span>
+        <input type="number" class="pqty" value="${p.qty}" min="0.25" step="0.25">
       </div>`;
     }
     return `<div class="parse-item" data-i="${i}">
