@@ -494,6 +494,32 @@
   .recipe-item .rtitle{ font-weight:500; font-size:13.5px; }
   .recipe-item .rmeta{ font-size:11.5px; color:var(--ink-faint); margin-top:2px; }
   .recipe-item ul{ margin:8px 0 0; padding-left:18px; font-size:12.5px; }
+
+  /* ---- Doctor visits ---- */
+  .visit-card{ border:1px solid var(--line); border-radius:var(--radius-m); padding:16px 18px; margin-top:12px; }
+  .visit-card .vrow{ display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .visit-card .vdate{ font-weight:500; font-size:14.5px; }
+  .visit-card .vmeta{ font-size:12.5px; color:var(--ink-soft); margin-top:2px; }
+  .visit-card .vactions{ display:flex; gap:8px; flex-shrink:0; }
+  .visit-card .vnotes{ font-size:13px; color:var(--ink); margin-top:10px; line-height:1.5; white-space:pre-wrap; }
+  .visit-card .vfollowup{ display:inline-block; margin-top:8px; font-size:11.5px; padding:3px 9px; border-radius:20px; background:var(--steel-wash); color:#234a63; }
+  .visit-card .vfollowup.overdue{ background:var(--rust-wash); color:var(--rust); }
+  .vfiles{ margin-top:12px; display:flex; flex-wrap:wrap; gap:8px; }
+  .vfile-chip{
+    display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:5px 10px;
+    border:1px solid var(--line); border-radius:20px; background:var(--line-soft); cursor:pointer;
+  }
+  .vfile-chip .vfile-x{ color:var(--ink-faint); cursor:pointer; font-weight:600; }
+  .vfile-chip .vfile-x:hover{ color:var(--rust); }
+  .vupload-row{ display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap; }
+  .vupload-row select{ padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-family:inherit; font-size:12.5px; }
+  .follow-up-item{
+    display:flex; justify-content:space-between; align-items:center; padding:8px 0;
+    border-bottom:1px solid var(--line-soft); font-size:13px;
+  }
+  .follow-up-item:last-child{ border-bottom:none; }
+  .follow-up-item .fdate{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; }
+  .follow-up-item .fdate.overdue{ color:var(--rust); }
   .recipe-item ol{ margin:8px 0 0; padding-left:18px; font-size:12.5px; }
 </style>
 </head>
@@ -912,6 +938,66 @@
       </div>
     </section>
 
+    <!-- DOCTOR VISITS -->
+    <section class="panel" data-panel="visits">
+      <div class="page-head">
+        <h1>Doctor visits</h1>
+        <p>Keep a record of your visits, and store prescriptions, consultation notes, and bills alongside them.</p>
+      </div>
+
+      <div class="disclaimer warn">
+        <strong>Storage, not interpretation</strong>
+        This app never attempts to read or summarize what's written on a prescription or consultation note — handwriting is hard to read reliably, and medicine names vary too much by brand and region to guess safely. Everything searchable here (doctor, notes, medicines) is typed in by you. Files are kept as your own private, secure record.
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Add a visit</h3>
+        <div class="field-row">
+          <div class="field">
+            <label for="visitDate">Visit date</label>
+            <input type="date" id="visitDate">
+          </div>
+          <div class="field">
+            <label for="visitFollowUp">Follow-up date — optional</label>
+            <input type="date" id="visitFollowUp">
+          </div>
+        </div>
+        <div class="field-row">
+          <div class="field">
+            <label for="visitDoctor">Doctor's name</label>
+            <input type="text" id="visitDoctor" placeholder="e.g. Dr. Padmashri Parimalam">
+          </div>
+          <div class="field">
+            <label for="visitSpecialty">Specialty — optional</label>
+            <input type="text" id="visitSpecialty" placeholder="e.g. Endocrinologist">
+          </div>
+        </div>
+        <div class="field">
+          <label for="visitClinic">Clinic / hospital — optional</label>
+          <input type="text" id="visitClinic" placeholder="e.g. Aster Labs, Bangalore">
+        </div>
+        <div class="field">
+          <label for="visitNotes">Notes — in your own words (what was discussed, prescribed, etc.)</label>
+          <textarea id="visitNotes" rows="3" placeholder="e.g. Reviewed HbA1c and vitamin D results. Prescribed vitamin D3 60,000 IU weekly for 8 weeks. Follow up in 2 months." style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+        </div>
+        <div style="text-align:right;">
+          <button class="btn" id="addVisitBtn">Save visit</button>
+        </div>
+        <div id="addVisitStatus" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
+      </div>
+
+      <div class="card" id="upcomingFollowUpsCard" style="margin-top:20px; display:none;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Upcoming follow-ups</h3>
+        <div id="upcomingFollowUpsList"></div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your visits</h3>
+        <div id="visitsList"></div>
+        <div class="empty" id="visitsEmpty">No visits saved yet.</div>
+      </div>
+    </section>
+
     <!-- WEARABLES -->
     <section class="panel" data-panel="wearables">
       <div class="page-head">
@@ -1068,6 +1154,7 @@ const sections = [
   {id:'gaps', label:'Nutrient gap'},
   {id:'trends', label:'Trends & history'},
   {id:'medical', label:'Medical reports'},
+  {id:'visits', label:'Doctor visits'},
   {id:'wearables', label:'Wearables'},
 ];
 const nav = document.getElementById('nav');
@@ -1085,6 +1172,7 @@ function showPanel(id){
   window.scrollTo({top:0});
   if(id === 'trends') renderTrends();
   if(id === 'medical') loadSavedReports();
+  if(id === 'visits') loadVisits();
 }
 showPanel('profile');
 
@@ -2598,6 +2686,200 @@ async function fetchRecipeIdeas(foods, panelEl, btnEl){
   } finally {
     btnEl.disabled = false;
   }
+}
+
+// ---------- Doctor visits (real file storage — prescriptions, notes, bills) ----------
+const DOC_TYPE_LABELS = { prescription:'Prescription', consultation_note:'Consultation note', bill_receipt:'Bill / receipt', other:'Other' };
+
+function sanitizeFileName(name){
+  return (name || 'file').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+async function uploadVisitFile(visitId, file, docType){
+  const path = `${currentUser.id}/${visitId}/${Date.now()}-${sanitizeFileName(file.name)}`;
+  const { error: uploadErr } = await db.storage.from('medical-documents').upload(path, file, { upsert: false });
+  if(uploadErr) throw uploadErr;
+  const { error: dbErr } = await db.from('doctor_visit_files').insert({
+    visit_id: visitId, user_id: currentUser.id, doc_type: docType, storage_path: path, file_name: file.name,
+  });
+  if(dbErr) throw dbErr;
+}
+
+async function viewVisitFile(storagePath){
+  const { data, error } = await db.storage.from('medical-documents').createSignedUrl(storagePath, 120);
+  if(error){ console.error('Could not open file:', error.message); return; }
+  window.open(data.signedUrl, '_blank');
+}
+
+async function deleteVisitFile(fileId, storagePath){
+  await db.storage.from('medical-documents').remove([storagePath]);
+  await db.from('doctor_visit_files').delete().eq('id', fileId);
+}
+
+document.getElementById('addVisitBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const statusEl = document.getElementById('addVisitStatus');
+  const visitDate = document.getElementById('visitDate').value;
+  if(!visitDate){ statusEl.style.color='var(--rust)'; statusEl.textContent = 'Visit date is required.'; return; }
+
+  statusEl.style.color = 'var(--ink-faint)';
+  statusEl.textContent = 'Saving…';
+  const { error } = await db.from('doctor_visits').insert({
+    user_id: currentUser.id,
+    visit_date: visitDate,
+    follow_up_date: document.getElementById('visitFollowUp').value || null,
+    doctor_name: document.getElementById('visitDoctor').value || null,
+    specialty: document.getElementById('visitSpecialty').value || null,
+    clinic_name: document.getElementById('visitClinic').value || null,
+    visit_notes: document.getElementById('visitNotes').value || null,
+  });
+  if(error){ statusEl.style.color='var(--rust)'; statusEl.textContent = "Couldn't save: " + error.message; return; }
+
+  ['visitDate','visitFollowUp','visitDoctor','visitSpecialty','visitClinic','visitNotes'].forEach(id=>{
+    document.getElementById(id).value = '';
+  });
+  statusEl.style.color = 'var(--teal-deep)';
+  statusEl.textContent = 'Visit saved below.';
+  await loadVisits();
+};
+
+async function loadVisits(){
+  if(!currentUser) return;
+  const { data: visits, error: vErr } = await db
+    .from('doctor_visits').select('*')
+    .eq('user_id', currentUser.id)
+    .order('visit_date', { ascending: false });
+  if(vErr){ console.error('Could not load visits:', vErr.message); return; }
+
+  const { data: files, error: fErr } = await db
+    .from('doctor_visit_files').select('*')
+    .eq('user_id', currentUser.id);
+  if(fErr) console.error('Could not load visit files:', fErr.message);
+
+  const filesByVisit = {};
+  (files || []).forEach(f=>{ (filesByVisit[f.visit_id] = filesByVisit[f.visit_id] || []).push(f); });
+
+  renderUpcomingFollowUps(visits || []);
+  renderVisitsList(visits || [], filesByVisit);
+}
+
+function renderUpcomingFollowUps(visits){
+  const card = document.getElementById('upcomingFollowUpsCard');
+  const listEl = document.getElementById('upcomingFollowUpsList');
+  const todayStr = toDateStr(new Date());
+  const upcoming = visits
+    .filter(v => v.follow_up_date)
+    .sort((a,b)=> a.follow_up_date.localeCompare(b.follow_up_date));
+
+  if(upcoming.length === 0){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+  listEl.innerHTML = upcoming.map(v=>{
+    const overdue = v.follow_up_date < todayStr;
+    return `<div class="follow-up-item">
+      <span>${v.doctor_name || 'Follow-up'}${v.specialty ? ' · '+v.specialty : ''}</span>
+      <span class="fdate ${overdue?'overdue':''}">${v.follow_up_date}${overdue ? ' (overdue)' : ''}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderVisitsList(visits, filesByVisit){
+  const listEl = document.getElementById('visitsList');
+  const emptyEl = document.getElementById('visitsEmpty');
+  if(visits.length === 0){
+    listEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  listEl.innerHTML = visits.map(v=>{
+    const files = filesByVisit[v.id] || [];
+    const metaBits = [v.doctor_name, v.specialty, v.clinic_name].filter(Boolean);
+    const todayStr = toDateStr(new Date());
+    const followUpBadge = v.follow_up_date
+      ? `<span class="vfollowup ${v.follow_up_date < todayStr ? 'overdue' : ''}">Follow-up: ${v.follow_up_date}</span>`
+      : '';
+    return `<div class="visit-card" data-id="${v.id}">
+      <div class="vrow">
+        <div>
+          <div class="vdate">${v.visit_date}</div>
+          <div class="vmeta">${metaBits.join(' · ') || 'No doctor/clinic recorded'}</div>
+        </div>
+        <div class="vactions">
+          <button class="btn ghost small delete-visit-btn">Delete</button>
+        </div>
+      </div>
+      ${v.visit_notes ? `<div class="vnotes">${v.visit_notes}</div>` : ''}
+      ${followUpBadge}
+      <div class="vfiles">
+        ${files.map(f=>`<span class="vfile-chip" data-file-id="${f.id}" data-path="${f.storage_path}">
+          📄 ${DOC_TYPE_LABELS[f.doc_type] || 'File'}${f.file_name ? ': '+f.file_name : ''}
+          <span class="vfile-x" data-file-id="${f.id}" data-path="${f.storage_path}">×</span>
+        </span>`).join('')}
+      </div>
+      <div class="vupload-row">
+        <input type="file" class="visit-file-input" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none;">
+        <select class="visit-doc-type">
+          <option value="prescription">Prescription</option>
+          <option value="consultation_note">Consultation note</option>
+          <option value="bill_receipt">Bill / receipt</option>
+          <option value="other">Other</option>
+        </select>
+        <button class="btn ghost small choose-visit-file-btn">Attach a file</button>
+        <span class="upload-status" style="font-size:11.5px; color:var(--ink-faint);"></span>
+      </div>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.visit-card').forEach(card=>{
+    const visitId = card.dataset.id;
+
+    card.querySelector('.delete-visit-btn').onclick = (e)=>{
+      showInlineConfirm(e.target, 'Delete this visit and all its attached files?', async ()=>{
+        const files = (filesByVisit[visitId] || []);
+        for(const f of files){ await db.storage.from('medical-documents').remove([f.storage_path]); }
+        await db.from('doctor_visits').delete().eq('id', visitId);
+        await loadVisits();
+      });
+    };
+
+    card.querySelectorAll('.vfile-chip').forEach(chip=>{
+      chip.onclick = (e)=>{
+        if(e.target.classList.contains('vfile-x')) return; // handled separately
+        viewVisitFile(chip.dataset.path);
+      };
+    });
+    card.querySelectorAll('.vfile-x').forEach(x=>{
+      x.onclick = (e)=>{
+        e.stopPropagation();
+        showInlineConfirm(e.target, 'Remove this file?', async ()=>{
+          await deleteVisitFile(x.dataset.fileId, x.dataset.path);
+          await loadVisits();
+        });
+      };
+    });
+
+    const fileInput = card.querySelector('.visit-file-input');
+    const chooseBtn = card.querySelector('.choose-visit-file-btn');
+    const statusEl = card.querySelector('.upload-status');
+    chooseBtn.onclick = ()=> fileInput.click();
+    fileInput.onchange = async ()=>{
+      if(!fileInput.files.length) return;
+      const file = fileInput.files[0];
+      if(file.size > 8 * 1024 * 1024){ statusEl.style.color='var(--rust)'; statusEl.textContent = 'File too large (max ~8MB).'; return; }
+      const docType = card.querySelector('.visit-doc-type').value;
+      statusEl.style.color = 'var(--ink-faint)';
+      statusEl.textContent = 'Uploading…';
+      try{
+        await uploadVisitFile(visitId, file, docType);
+        await loadVisits();
+      } catch(e){
+        console.error('Upload error:', e);
+        statusEl.style.color = 'var(--rust)';
+        statusEl.textContent = "Couldn't upload: " + e.message;
+      }
+    };
+  });
 }
 
 // ---------- Wearables mock ----------
