@@ -980,6 +980,20 @@
           <label for="visitNotes">Notes — in your own words (what was discussed, prescribed, etc.)</label>
           <textarea id="visitNotes" rows="3" placeholder="e.g. Reviewed HbA1c and vitamin D results. Prescribed vitamin D3 60,000 IU weekly for 8 weeks. Follow up in 2 months." style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
         </div>
+        <div class="field">
+          <label>Attach files — prescription, consultation notes, bill, etc.</label>
+          <div class="vupload-row" style="margin-top:0;">
+            <input type="file" id="newVisitFileInput" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none;">
+            <select id="newVisitDocType">
+              <option value="prescription">Prescription</option>
+              <option value="consultation_note">Consultation note</option>
+              <option value="bill_receipt">Bill / receipt</option>
+              <option value="other">Other</option>
+            </select>
+            <button class="btn ghost small" id="chooseNewVisitFileBtn">Choose file</button>
+          </div>
+          <div id="pendingVisitFiles" style="margin-top:10px; display:flex; flex-wrap:wrap; gap:8px;"></div>
+        </div>
         <div style="text-align:right;">
           <button class="btn" id="addVisitBtn">Save visit</button>
         </div>
@@ -2716,6 +2730,40 @@ async function deleteVisitFile(fileId, storagePath){
   await db.from('doctor_visit_files').delete().eq('id', fileId);
 }
 
+let pendingVisitFiles = [];
+
+function renderPendingVisitFiles(){
+  const wrap = document.getElementById('pendingVisitFiles');
+  wrap.innerHTML = pendingVisitFiles.map((pf, i)=>`
+    <span class="vfile-chip">
+      📎 ${DOC_TYPE_LABELS[pf.docType] || 'File'}: ${pf.file.name}
+      <span class="vfile-x" data-i="${i}">×</span>
+    </span>`).join('');
+  wrap.querySelectorAll('.vfile-x').forEach(x=>{
+    x.onclick = ()=>{
+      pendingVisitFiles.splice(+x.dataset.i, 1);
+      renderPendingVisitFiles();
+    };
+  });
+}
+
+document.getElementById('chooseNewVisitFileBtn').onclick = ()=> document.getElementById('newVisitFileInput').click();
+document.getElementById('newVisitFileInput').onchange = ()=>{
+  const input = document.getElementById('newVisitFileInput');
+  if(!input.files.length) return;
+  const file = input.files[0];
+  if(file.size > 8 * 1024 * 1024){
+    document.getElementById('addVisitStatus').style.color = 'var(--rust)';
+    document.getElementById('addVisitStatus').textContent = 'That file is too large (max ~8MB).';
+    input.value = '';
+    return;
+  }
+  const docType = document.getElementById('newVisitDocType').value;
+  pendingVisitFiles.push({ file, docType });
+  renderPendingVisitFiles();
+  input.value = ''; // allow choosing another file, even one with the same name
+};
+
 document.getElementById('addVisitBtn').onclick = async ()=>{
   if(!currentUser) return;
   const statusEl = document.getElementById('addVisitStatus');
@@ -2724,7 +2772,7 @@ document.getElementById('addVisitBtn').onclick = async ()=>{
 
   statusEl.style.color = 'var(--ink-faint)';
   statusEl.textContent = 'Saving…';
-  const { error } = await db.from('doctor_visits').insert({
+  const { data: inserted, error } = await db.from('doctor_visits').insert({
     user_id: currentUser.id,
     visit_date: visitDate,
     follow_up_date: document.getElementById('visitFollowUp').value || null,
@@ -2732,14 +2780,31 @@ document.getElementById('addVisitBtn').onclick = async ()=>{
     specialty: document.getElementById('visitSpecialty').value || null,
     clinic_name: document.getElementById('visitClinic').value || null,
     visit_notes: document.getElementById('visitNotes').value || null,
-  });
+  }).select().single();
   if(error){ statusEl.style.color='var(--rust)'; statusEl.textContent = "Couldn't save: " + error.message; return; }
+
+  let uploadFailures = 0;
+  if(pendingVisitFiles.length){
+    statusEl.textContent = `Visit saved — uploading ${pendingVisitFiles.length} file(s)…`;
+    for(const pf of pendingVisitFiles){
+      try{ await uploadVisitFile(inserted.id, pf.file, pf.docType); }
+      catch(e){ console.error('File upload failed:', e); uploadFailures++; }
+    }
+  }
 
   ['visitDate','visitFollowUp','visitDoctor','visitSpecialty','visitClinic','visitNotes'].forEach(id=>{
     document.getElementById(id).value = '';
   });
-  statusEl.style.color = 'var(--teal-deep)';
-  statusEl.textContent = 'Visit saved below.';
+  pendingVisitFiles = [];
+  renderPendingVisitFiles();
+
+  if(uploadFailures > 0){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = `Visit saved, but ${uploadFailures} file(s) failed to upload — try attaching them again below.`;
+  } else {
+    statusEl.style.color = 'var(--teal-deep)';
+    statusEl.textContent = 'Visit saved below.';
+  }
   await loadVisits();
 };
 
