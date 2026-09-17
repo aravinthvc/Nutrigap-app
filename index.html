@@ -740,13 +740,18 @@
           </div>
 
           <div class="card" style="margin-top:20px;">
-            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
-              <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Or describe it — type or speak</h3>
-              <button class="btn ghost small" id="micBtn">🎙️ Speak</button>
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px; flex-wrap:wrap;">
+              <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Or describe it — type, speak, or snap a photo</h3>
+              <div style="display:flex; gap:8px;">
+                <button class="btn ghost small" id="micBtn">🎙️ Speak</button>
+                <button class="btn ghost small" id="photoBtn">📷 Photo</button>
+                <input type="file" id="photoInput" accept="image/*" capture="environment" style="display:none;">
+              </div>
             </div>
             <textarea id="voiceText" rows="2" placeholder="e.g. two rotis and dal for lunch, a banana and a cup of milk for breakfast" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
             <div id="micStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
             <div id="voiceUnsupportedNote" class="note" style="display:none;">Voice input isn't supported in this browser — type what you ate instead and press "Parse what I ate."</div>
+            <div class="note" id="photoNote" style="display:none;">A photo gives a rough guess at what's on the plate and roughly how much — always double-check the description below and the matches before adding, since portion size from a single photo is inherently an estimate, not a measurement.</div>
             <div style="text-align:right; margin-top:8px;">
               <button class="btn ghost small" id="parseBtn">Parse what I ate</button>
             </div>
@@ -1613,6 +1618,74 @@ document.getElementById('parseBtn').onclick = ()=>{
   if(!text.trim()) return;
   pendingParse = parseTranscript(text);
   renderParseReview();
+};
+
+// ---------- Photo-based logging (Claude vision → same transcript pipeline as voice) ----------
+// Downscales the photo client-side before upload — mobile photos can be
+// several MB, and we only need enough resolution to tell what's on a plate.
+function resizeImageToBase64(file, maxDim){
+  return new Promise((resolve, reject)=>{
+    const img = new Image();
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = ()=>{
+      img.onerror = reject;
+      img.onload = ()=>{
+        let { width, height } = img;
+        if(width > maxDim || height > maxDim){
+          const scale = maxDim / Math.max(width, height);
+          width = Math.round(width * scale);
+          height = Math.round(height * scale);
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width; canvas.height = height;
+        canvas.getContext('2d').drawImage(img, 0, 0, width, height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+        resolve(dataUrl.split(',')[1]); // strip the "data:image/jpeg;base64," prefix
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+document.getElementById('photoBtn').onclick = ()=> document.getElementById('photoInput').click();
+document.getElementById('photoInput').onchange = async ()=>{
+  const input = document.getElementById('photoInput');
+  if(!input.files.length) return;
+  const file = input.files[0];
+  const micStatus = document.getElementById('micStatus');
+  document.getElementById('photoNote').style.display = 'block';
+  micStatus.style.color = 'var(--ink-faint)';
+  micStatus.textContent = 'Analyzing photo…';
+
+  try{
+    const imageBase64 = await resizeImageToBase64(file, 1024);
+    const res = await fetch('/api/photo-log', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ imageBase64, mediaType: 'image/jpeg' }),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+
+    if(!data.description || data.description === 'NO_FOOD_DETECTED'){
+      micStatus.style.color = 'var(--rust)';
+      micStatus.textContent = "Couldn't identify food in that photo — try a clearer shot, or type/speak instead.";
+      return;
+    }
+    document.getElementById('voiceText').value = data.description;
+    micStatus.style.color = 'var(--teal-deep)';
+    micStatus.textContent = 'Here\'s what the photo looks like — check the wording below, then "Parse what I ate."';
+    pendingParse = parseTranscript(data.description);
+    renderParseReview();
+  } catch(e){
+    console.error('Photo log error:', e);
+    micStatus.style.color = 'var(--rust)';
+    micStatus.textContent = "Couldn't analyze that photo — try again, or type/speak instead.";
+  } finally {
+    input.value = '';
+  }
 };
 
 function renderParseReview(){
