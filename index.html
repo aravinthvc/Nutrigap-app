@@ -853,14 +853,15 @@
           <div class="target-card" id="activityScoreCard">
             <div class="kcal-label">Today's classification</div>
             <div class="kcal"><span id="activityClassOut">—</span></div>
-            <div class="target-row"><span>Moderate-equivalent minutes</span><span class="v" id="activityMemOut">—</span></div>
+            <div class="target-row"><span>Real minutes logged</span><span class="v" id="activityRealMinOut">—</span></div>
+            <div class="target-row"><span>→ Moderate-equivalent minutes</span><span class="v" id="activityMemOut">—</span></div>
             <div class="target-row"><span>Calories burned (activity)</span><span class="v" id="activityKcalOut">—</span></div>
           </div>
           <div class="note" id="activityExplainNote" style="cursor:pointer;">
             <strong>How is this calculated? ▾</strong>
           </div>
           <div class="note" id="activityExplainDetail" style="display:none;">
-            Each activity has a published MET value (how many times more energy it burns than sitting still). Using the same convention WHO and CDC use, 1 vigorous minute counts as 2 moderate minutes, and light activity counts at half weight — added up, that gives "moderate-equivalent minutes" for the day: 0 = Sedentary, 1–29 = Light, 30–59 = Moderate, 60–89 = Active, 90+ = Very Active. This is this app's own daily scoring built on real public-health intensity conventions, not an official medical classification — official guidelines are stated per week, not per day.
+            "Moderate-equivalent minutes" is a converted score, not real clock time — a workout that feels twice as hard counts double. Each activity has a published MET value (how many times more energy it burns than sitting still). Using the same convention WHO and CDC use, 1 vigorous minute counts as 2 moderate minutes, and 1 light minute counts as half a moderate minute — so 30 real minutes of something vigorous (like a hard strength session) becomes 60 moderate-equivalent minutes, while 30 real minutes of something light (like gentle stretching) becomes 15. Added up for the day: 0 = Sedentary, 1–29 = Light, 30–59 = Moderate, 60–89 = Active, 90+ = Very Active. This is this app's own daily scoring built on real public-health intensity conventions, not an official medical classification — official guidelines are stated per week, not per day.
           </div>
 
           <div class="card" id="activityVsProfileCard" style="margin-top:20px; display:none;">
@@ -3205,9 +3206,11 @@ function classifyActivityLevel(mem){
 
 function renderActivityClassification(){
   const mem = computeModerateEquivalentMinutes(activityEntriesCache);
+  const realMin = activityEntriesCache.reduce((s,e)=> s + e.duration_minutes, 0);
   const totalKcal = activityEntriesCache.reduce((s,e)=> s + e.calories_burned, 0);
   const tier = classifyActivityLevel(mem);
   document.getElementById('activityClassOut').textContent = tier.label;
+  document.getElementById('activityRealMinOut').textContent = Math.round(realMin) + ' min';
   document.getElementById('activityMemOut').textContent = Math.round(mem) + ' min';
   document.getElementById('activityKcalOut').textContent = Math.round(totalKcal) + ' kcal';
 }
