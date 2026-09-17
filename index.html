@@ -698,7 +698,7 @@
     <section class="panel" data-panel="diet">
       <div class="page-head">
         <h1>Diet log</h1>
-        <p>Add what you've eaten, tagged by meal. Saved automatically so you can look back or edit any day.</p>
+        <p id="gapsSubtitle">Add what you've eaten, tagged by meal — your nutrient gap updates as you go.</p>
       </div>
 
       <div class="card" id="dateCard">
@@ -712,52 +712,85 @@
         </div>
       </div>
 
-      <div class="card">
-        <div class="field">
-          <label>Which meal?</label>
-          <div class="segmented" id="mealGroup">
-            <button data-val="breakfast">Breakfast</button>
-            <button data-val="lunch">Lunch</button>
-            <button data-val="dinner">Dinner</button>
-            <button data-val="snack">Snack</button>
+      <div class="grid-2">
+        <div>
+          <div class="card">
+            <div class="field">
+              <label>Which meal?</label>
+              <div class="segmented" id="mealGroup">
+                <button data-val="breakfast">Breakfast</button>
+                <button data-val="lunch">Lunch</button>
+                <button data-val="dinner">Dinner</button>
+                <button data-val="snack">Snack</button>
+              </div>
+            </div>
+            <div class="add-row">
+              <div class="field" style="margin-bottom:0;">
+                <label for="foodInput">Food</label>
+                <input type="text" id="foodInput" list="foodDatalist" placeholder="Start typing — e.g. dosa, rajma, paneer…" autocomplete="off">
+                <datalist id="foodDatalist"></datalist>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label for="servings">Servings</label>
+                <input type="number" id="servings" value="1" min="0.25" step="0.25">
+              </div>
+              <button class="btn" id="addFoodBtn">Add to log</button>
+            </div>
+            <div id="addFoodHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
+          </div>
+
+          <div class="card" style="margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
+              <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Or describe it — type or speak</h3>
+              <button class="btn ghost small" id="micBtn">🎙️ Speak</button>
+            </div>
+            <textarea id="voiceText" rows="2" placeholder="e.g. two rotis and dal for lunch, a banana and a cup of milk for breakfast" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+            <div id="micStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
+            <div id="voiceUnsupportedNote" class="note" style="display:none;">Voice input isn't supported in this browser — type what you ate instead and press "Parse what I ate."</div>
+            <div style="text-align:right; margin-top:8px;">
+              <button class="btn ghost small" id="parseBtn">Parse what I ate</button>
+            </div>
+            <div id="parseReview" style="display:none; margin-top:16px;">
+              <div class="note" style="margin-top:0;">Check these before adding — matching is best-effort and may miss an item or get a quantity wrong.</div>
+              <div id="parseReviewList"></div>
+              <div style="text-align:right; margin-top:10px;">
+                <button class="btn" id="confirmParseBtn">Add checked items to log</button>
+              </div>
+            </div>
           </div>
         </div>
-        <div class="add-row">
-          <div class="field" style="margin-bottom:0;">
-            <label for="foodInput">Food</label>
-            <input type="text" id="foodInput" list="foodDatalist" placeholder="Start typing — e.g. dosa, rajma, paneer…" autocomplete="off">
-            <datalist id="foodDatalist"></datalist>
+
+        <div>
+          <div class="card">
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Macronutrients</h3>
+            <div id="macroGaps"></div>
           </div>
-          <div class="field" style="margin-bottom:0;">
-            <label for="servings">Servings</label>
-            <input type="number" id="servings" value="1" min="0.25" step="0.25">
+
+          <div class="insight-card" style="margin-top:20px;">
+            <div class="disclaimer">
+              <strong>AI-generated, general guidance only</strong>
+              Generated live by Claude from your logged foods and goal — never a diagnosis or guaranteed outcome, and only suggests foods genuinely in this app's database.
+            </div>
+            <h3 id="insightHeading">What today's log suggests</h3>
+            <p id="insightText">Add some food to your log to see an analysis here.</p>
+            <div class="meal-sugg" id="mealSugg"></div>
           </div>
-          <button class="btn" id="addFoodBtn">Add to log</button>
+
+          <div class="card" style="margin-top:20px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; cursor:pointer;" id="microToggleRow">
+              <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Micronutrients</h3>
+              <span id="microToggleLabel" style="font-size:12.5px; color:var(--teal-deep); white-space:nowrap;">Show details ▾</span>
+            </div>
+            <div id="microSummaryLine" style="font-size:12.5px; color:var(--ink-soft); margin-top:6px;"></div>
+            <div id="microDetailWrap" style="display:none; margin-top:14px;">
+              <div id="microGaps"></div>
+              <div class="note">General adult RDAs (ICMR-NIN / USDA), not adjusted for pregnancy, illness, or lab-confirmed deficiency. Sodium is an upper limit — being under it is the goal.</div>
+            </div>
+          </div>
         </div>
-        <div id="addFoodHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
       </div>
 
-      <div class="card">
-        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:8px;">
-          <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Or describe it — type or speak</h3>
-          <button class="btn ghost small" id="micBtn">🎙️ Speak</button>
-        </div>
-        <textarea id="voiceText" rows="2" placeholder="e.g. two rotis and dal for lunch, a banana and a cup of milk for breakfast" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
-        <div id="micStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
-        <div id="voiceUnsupportedNote" class="note" style="display:none;">Voice input isn't supported in this browser — type what you ate instead and press "Parse what I ate."</div>
-        <div style="text-align:right; margin-top:8px;">
-          <button class="btn ghost small" id="parseBtn">Parse what I ate</button>
-        </div>
-        <div id="parseReview" style="display:none; margin-top:16px;">
-          <div class="note" style="margin-top:0;">Check these before adding — matching is best-effort and may miss an item or get a quantity wrong.</div>
-          <div id="parseReviewList"></div>
-          <div style="text-align:right; margin-top:10px;">
-            <button class="btn" id="confirmParseBtn">Add checked items to log</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="card">
+      <div class="card" style="margin-top:20px;">
         <table class="log" id="logTable">
           <thead>
             <tr><th>Food</th><th>Meal</th><th>Servings</th><th>Calories</th><th>Protein</th><th>Carbs</th><th>Fat</th><th></th></tr>
@@ -766,34 +799,6 @@
         </table>
         <div class="empty" id="logEmpty">No entries yet for this day — add your first food above.</div>
         <div id="saveStatus" style="font-size:11.5px; color:var(--ink-faint); margin-top:10px; min-height:14px;"></div>
-      </div>
-    </section>
-
-    <!-- GAP ANALYSIS -->
-    <section class="panel" data-panel="gaps">
-      <div class="page-head">
-        <h1>Nutrient gap</h1>
-        <p id="gapsSubtitle">What today's diet log covers against your daily target, macro and micro.</p>
-      </div>
-
-      <div class="grid-2">
-        <div class="card">
-          <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Macronutrients</h3>
-          <div id="macroGaps"></div>
-          <h3 style="font-size:15px; color:var(--ink-soft); font-weight:500; margin-top:24px;">Key micronutrients</h3>
-          <div id="microGaps"></div>
-          <div class="note">Micronutrient targets shown are general adult RDAs (ICMR-NIN / USDA reference values), not adjusted for pregnancy, illness, or lab-confirmed deficiency. Sodium is shown as an upper limit, not a minimum — being under it is the goal, not a gap to fill.</div>
-        </div>
-
-        <div class="insight-card">
-          <div class="disclaimer">
-            <strong>AI-generated, general guidance only</strong>
-            This analysis is generated live by Claude from your logged foods and goal, under instructions to never diagnose, never guarantee an outcome, and only suggest foods that are genuinely in this app's database. It isn't medical advice — for anything condition-specific, talk to a doctor or dietitian.
-          </div>
-          <h3 id="insightHeading">What today's log suggests</h3>
-          <p id="insightText">Add some food to your log to see an analysis here.</p>
-          <div class="meal-sugg" id="mealSugg"></div>
-        </div>
       </div>
     </section>
 
@@ -1164,8 +1169,7 @@ async function initAuth(){
 // ---------- Nav ----------
 const sections = [
   {id:'profile', label:'Profile & targets'},
-  {id:'diet', label:'Diet log'},
-  {id:'gaps', label:'Nutrient gap'},
+  {id:'diet', label:'Diet log & gap'},
   {id:'trends', label:'Trends & history'},
   {id:'medical', label:'Medical reports'},
   {id:'visits', label:'Doctor visits'},
@@ -1731,18 +1735,20 @@ const microDefs = [
   {key:'selenium', label:'Selenium', unit:'mcg', benefit:'An antioxidant that supports thyroid function and helps protect cells from damage.'},
 ];
 
+function gapStatus(def, consumed, target){
+  if(def.type === 'limit'){
+    if(consumed > target) return { cls:'over', text: '+' + Math.round(consumed-target) + def.unit + ' over limit' };
+    return { cls:'met', text: 'Within limit' };
+  }
+  const diff = target - consumed;
+  if(diff > target*0.1) return { cls:'short', text: '−' + Math.round(diff) + def.unit + ' short' };
+  if(diff < -target*0.05) return { cls:'over', text: '+' + Math.round(-diff) + def.unit + ' over' };
+  return { cls:'met', text: 'On target' };
+}
+
 function gapRow(def, consumed, target){
   const pct = target>0 ? Math.min(150, (consumed/target)*100) : 0;
-  let cls, text;
-  if(def.type === 'limit'){
-    if(consumed > target){ cls='over'; text = '+' + Math.round(consumed-target) + def.unit + ' over limit'; }
-    else { cls='met'; text = 'Within limit'; }
-  } else {
-    const diff = target - consumed;
-    cls = 'met'; text = 'On target';
-    if(diff > target*0.1){ cls='short'; text = '−' + Math.round(diff) + def.unit + ' short'; }
-    else if(diff < -target*0.05){ cls='over'; text = '+' + Math.round(-diff) + def.unit + ' over'; }
-  }
+  const { cls, text } = gapStatus(def, consumed, target);
   const benefitHtml = def.benefit ? `<span class="benefit">${def.benefit}</span>` : '';
   return `<div class="gap-row">
     <div class="heads">
@@ -1765,11 +1771,33 @@ function renderGaps(){
   if(!tg.kcal) return;
   document.getElementById('macroGaps').innerHTML = macroDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
   document.getElementById('microGaps').innerHTML = microDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
+
+  const microStatuses = microDefs.map(d=>gapStatus(d, t[d.key], tg[d.key]));
+  const shortCount = microStatuses.filter(s=>s.cls==='short').length;
+  const overCount = microStatuses.filter(s=>s.cls==='over').length;
+  const summaryEl = document.getElementById('microSummaryLine');
+  if(shortCount === 0 && overCount === 0){
+    summaryEl.textContent = 'All 15 micronutrients on target.';
+  } else {
+    const bits = [];
+    if(shortCount) bits.push(`${shortCount} short of target`);
+    if(overCount) bits.push(`${overCount} over${microDefs.some(d=>d.type==='limit')?' limit':''}`);
+    summaryEl.textContent = bits.join(' · ') + ' — see details below.';
+  }
+
   const label = friendlyDate(state.currentDate);
   document.getElementById('gapsSubtitle').textContent = `What ${label === 'today' ? "today's" : label + "'s"} diet log covers against your daily target, macro and micro.`;
   document.getElementById('insightHeading').textContent = `What ${label === 'today' ? "today's" : label + "'s"} log suggests`;
   renderInsight(t, tg);
 }
+
+document.getElementById('microToggleRow').onclick = ()=>{
+  const wrap = document.getElementById('microDetailWrap');
+  const label = document.getElementById('microToggleLabel');
+  const open = wrap.style.display !== 'none';
+  wrap.style.display = open ? 'none' : 'block';
+  label.textContent = open ? 'Show details ▾' : 'Hide details ▴';
+};
 
 // ---------- Live AI insight (calls Claude via our serverless function) ----------
 async function renderInsight(t, tg){
