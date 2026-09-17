@@ -802,6 +802,79 @@
       </div>
     </section>
 
+    <!-- ACTIVITY LOG -->
+    <section class="panel" data-panel="activity">
+      <div class="page-head">
+        <h1>Activity log</h1>
+        <p>Log what you did today — walking, strength training, swimming, and more — and see how the day classifies.</p>
+      </div>
+
+      <div class="card" id="activityDateCard">
+        <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;">
+          <div class="field" style="margin-bottom:0;">
+            <label for="activityDateInput">Logging for</label>
+            <input type="date" id="activityDateInput">
+          </div>
+          <button class="btn ghost small" id="activityTodayBtn">Jump to today</button>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div>
+          <div class="card">
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Add an activity</h3>
+            <div class="add-row">
+              <div class="field" style="margin-bottom:0;">
+                <label for="activityInput">Activity</label>
+                <input type="text" id="activityInput" list="activityDatalist" placeholder="Start typing — e.g. walking, swimming, yoga…" autocomplete="off">
+                <datalist id="activityDatalist"></datalist>
+              </div>
+              <div class="field" style="margin-bottom:0;">
+                <label for="activityDuration">Minutes</label>
+                <input type="number" id="activityDuration" value="30" min="1" step="1">
+              </div>
+              <button class="btn" id="addActivityBtn">Add to log</button>
+            </div>
+            <div id="addActivityHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
+          </div>
+
+          <div class="card" style="margin-top:20px;">
+            <table class="log" id="activityTable">
+              <thead>
+                <tr><th>Activity</th><th>Intensity</th><th>Minutes</th><th>Est. calories</th><th></th></tr>
+              </thead>
+              <tbody id="activityBody"></tbody>
+            </table>
+            <div class="empty" id="activityEmpty">No activity logged for this day yet.</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="target-card" id="activityScoreCard">
+            <div class="kcal-label">Today's classification</div>
+            <div class="kcal"><span id="activityClassOut">—</span></div>
+            <div class="target-row"><span>Moderate-equivalent minutes</span><span class="v" id="activityMemOut">—</span></div>
+            <div class="target-row"><span>Calories burned (activity)</span><span class="v" id="activityKcalOut">—</span></div>
+          </div>
+          <div class="note" id="activityExplainNote" style="cursor:pointer;">
+            <strong>How is this calculated? ▾</strong>
+          </div>
+          <div class="note" id="activityExplainDetail" style="display:none;">
+            Each activity has a published MET value (how many times more energy it burns than sitting still). Using the same convention WHO and CDC use, 1 vigorous minute counts as 2 moderate minutes, and light activity counts at half weight — added up, that gives "moderate-equivalent minutes" for the day: 0 = Sedentary, 1–29 = Light, 30–59 = Moderate, 60–89 = Active, 90+ = Very Active. This is this app's own daily scoring built on real public-health intensity conventions, not an official medical classification — official guidelines are stated per week, not per day.
+          </div>
+
+          <div class="card" id="activityVsProfileCard" style="margin-top:20px; display:none;">
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your logged activity vs. your profile</h3>
+            <div id="activityVsProfileBody" style="font-size:13.5px; color:var(--ink); line-height:1.6;"></div>
+            <div style="text-align:right; margin-top:10px; display:none;" id="activityUpdateProfileRow">
+              <button class="btn ghost small" id="activityUpdateProfileBtn">Update my profile to match</button>
+            </div>
+            <div id="activityUpdateProfileStatus" style="font-size:12px; color:var(--teal-deep); text-align:right; margin-top:6px;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- TRENDS & HISTORY -->
     <section class="panel" data-panel="trends">
       <div class="page-head">
@@ -857,6 +930,16 @@
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Calories logged vs. target</h3>
         <div class="trend-chart" id="trendChart"></div>
         <div class="note" id="trendChartNote" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="card">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Activity</h3>
+        <div class="outcome-stats" id="activityTrendStats" style="grid-template-columns:repeat(3,1fr); margin-bottom:16px;"></div>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin-bottom:6px;">Calories burned from logged activity</div>
+        <div class="trend-chart" id="activityKcalChart"></div>
+        <div style="font-size:12.5px; color:var(--ink-soft); margin:18px 0 6px;">Moderate-equivalent minutes vs. the general 30 min/day guideline</div>
+        <div class="trend-chart" id="activityMemChart"></div>
+        <div class="note" style="margin-top:14px;">30 minutes/day of moderate-equivalent activity is a commonly cited general public-health guideline (CDC/WHO), not a personalized target. Bars below the line reflect a gap against that general guideline, not against your own profile.</div>
       </div>
 
       <div class="grid-2">
@@ -1058,6 +1141,7 @@ function showApp(user){
   loadFoods()
     .then(loadProfile)
     .then(()=> refreshDietLog())
+    .then(()=> loadActivities())
     .catch(e=> console.error('Startup error:', e));
 }
 
@@ -1170,6 +1254,7 @@ async function initAuth(){
 const sections = [
   {id:'profile', label:'Profile & targets'},
   {id:'diet', label:'Diet log & gap'},
+  {id:'activity', label:'Activity log'},
   {id:'trends', label:'Trends & history'},
   {id:'medical', label:'Medical reports'},
   {id:'visits', label:'Doctor visits'},
@@ -1191,6 +1276,7 @@ function showPanel(id){
   if(id === 'trends') renderTrends();
   if(id === 'medical') loadSavedReports();
   if(id === 'visits') loadVisits();
+  if(id === 'activity') refreshActivityLog();
 }
 showPanel('profile');
 
@@ -2975,6 +3061,205 @@ function renderVisitsList(visits, filesByVisit){
   });
 }
 
+// ---------- Activity log ----------
+let ACTIVITIES = [];
+let activityCurrentDate = TODAY_STR;
+let activityEntriesCache = [];
+
+async function loadActivities(){
+  const { data, error } = await db.from('activities').select('*').order('name');
+  if(error){ console.error('Could not load activities:', error.message); return; }
+  ACTIVITIES = data.map(a=>({
+    id: a.id, name: a.name, keywords: a.keywords || [], met: a.met, intensity: a.intensity, category: a.category,
+  }));
+  const list = document.getElementById('activityDatalist');
+  list.innerHTML = '';
+  ACTIVITIES.forEach(a=>{
+    const o = document.createElement('option');
+    o.value = a.name;
+    list.appendChild(o);
+  });
+}
+
+const activityDateInput = document.getElementById('activityDateInput');
+activityDateInput.value = TODAY_STR;
+activityDateInput.onchange = ()=>{
+  activityCurrentDate = activityDateInput.value || TODAY_STR;
+  document.getElementById('addActivityHint').textContent = '';
+  refreshActivityLog();
+};
+document.getElementById('activityTodayBtn').onclick = ()=>{
+  activityDateInput.value = TODAY_STR;
+  activityCurrentDate = TODAY_STR;
+  refreshActivityLog();
+};
+
+document.getElementById('activityExplainNote').onclick = ()=>{
+  const detail = document.getElementById('activityExplainDetail');
+  const open = detail.style.display !== 'none';
+  detail.style.display = open ? 'none' : 'block';
+  document.getElementById('activityExplainNote').querySelector('strong').textContent =
+    open ? 'How is this calculated? ▾' : 'How is this calculated? ▴';
+};
+
+document.getElementById('addActivityBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const hint = document.getElementById('addActivityHint');
+  const typed = document.getElementById('activityInput').value.trim();
+  const activity = ACTIVITIES.find(a=> a.name.toLowerCase() === typed.toLowerCase());
+  if(!activity){
+    hint.textContent = typed
+      ? `"${typed}" isn't in the activity list yet — pick a suggestion as you type.`
+      : 'Start typing an activity and pick one of the suggestions.';
+    return;
+  }
+  const duration = +document.getElementById('activityDuration').value || 0;
+  if(duration <= 0){ hint.textContent = 'Enter how many minutes.'; return; }
+  hint.textContent = '';
+
+  const weightKg = +document.getElementById('weight').value || 68;
+  const caloriesBurned = Math.round(activity.met * weightKg * (duration / 60));
+
+  const { error } = await db.from('activity_entries').insert({
+    user_id: currentUser.id,
+    entry_date: activityCurrentDate,
+    activity_id: activity.id,
+    duration_minutes: duration,
+    calories_burned: caloriesBurned,
+    source: 'manual',
+  });
+  if(error){ hint.textContent = 'Could not save: ' + error.message; return; }
+
+  document.getElementById('activityInput').value = '';
+  await refreshActivityLog();
+};
+
+async function refreshActivityLog(){
+  if(!currentUser) return;
+  const { data, error } = await db
+    .from('activity_entries')
+    .select('id, duration_minutes, calories_burned, activities(name, intensity, category)')
+    .eq('user_id', currentUser.id)
+    .eq('entry_date', activityCurrentDate);
+  if(error){ console.error('Could not load activity log:', error.message); activityEntriesCache = []; }
+  else {
+    activityEntriesCache = data.map(row=>({
+      id: row.id, duration_minutes: row.duration_minutes, calories_burned: row.calories_burned,
+      name: row.activities.name, intensity: row.activities.intensity, category: row.activities.category,
+    }));
+  }
+  renderActivityTable();
+  renderActivityClassification();
+  renderActivityVsProfile();
+}
+
+function renderActivityTable(){
+  const body = document.getElementById('activityBody');
+  const empty = document.getElementById('activityEmpty');
+  if(activityEntriesCache.length === 0){
+    body.innerHTML = '';
+    empty.style.display = 'block';
+    document.getElementById('activityTable').style.display = 'none';
+    return;
+  }
+  empty.style.display = 'none';
+  document.getElementById('activityTable').style.display = 'table';
+  body.innerHTML = activityEntriesCache.map(e=>`
+    <tr>
+      <td>${e.name}</td>
+      <td><span class="flag ${e.intensity === 'vigorous' ? 'high' : e.intensity === 'moderate' ? 'normal' : 'unknown'}">${e.intensity}</span></td>
+      <td>${e.duration_minutes}</td>
+      <td>${e.calories_burned} kcal</td>
+      <td><button class="rm" title="Remove" data-id="${e.id}">×</button></td>
+    </tr>`).join('');
+  body.querySelectorAll('.rm').forEach(btn=>{
+    btn.onclick = async ()=>{
+      await db.from('activity_entries').delete().eq('id', btn.dataset.id);
+      await refreshActivityLog();
+    };
+  });
+}
+
+// Moderate-equivalent minutes: 1 vigorous minute = 2 moderate minutes,
+// light activity counts at half weight — the same convention WHO/CDC use
+// to combine different intensities into one comparable number.
+function computeModerateEquivalentMinutes(entries){
+  return entries.reduce((sum, e)=>{
+    const weight = e.intensity === 'vigorous' ? 2 : e.intensity === 'moderate' ? 1 : 0.5;
+    return sum + e.duration_minutes * weight;
+  }, 0);
+}
+
+const ACTIVITY_TIERS = [
+  { max: 0, label: 'Sedentary', value: 1.2 },
+  { max: 29, label: 'Light', value: 1.375 },
+  { max: 59, label: 'Moderate', value: 1.55 },
+  { max: 89, label: 'Active', value: 1.725 },
+  { max: Infinity, label: 'Very Active', value: 1.9 },
+];
+function classifyActivityLevel(mem){
+  if(mem <= 0) return ACTIVITY_TIERS[0];
+  for(const tier of ACTIVITY_TIERS){ if(mem <= tier.max) return tier; }
+  return ACTIVITY_TIERS[ACTIVITY_TIERS.length-1];
+}
+
+function renderActivityClassification(){
+  const mem = computeModerateEquivalentMinutes(activityEntriesCache);
+  const totalKcal = activityEntriesCache.reduce((s,e)=> s + e.calories_burned, 0);
+  const tier = classifyActivityLevel(mem);
+  document.getElementById('activityClassOut').textContent = tier.label;
+  document.getElementById('activityMemOut').textContent = Math.round(mem) + ' min';
+  document.getElementById('activityKcalOut').textContent = Math.round(totalKcal) + ' kcal';
+}
+
+async function renderActivityVsProfile(){
+  if(!currentUser) return;
+  const card = document.getElementById('activityVsProfileCard');
+  const end = new Date();
+  const start = new Date(); start.setDate(start.getDate()-6);
+  const { data, error } = await db
+    .from('activity_entries')
+    .select('entry_date, duration_minutes, activities(intensity)')
+    .eq('user_id', currentUser.id)
+    .gte('entry_date', toDateStr(start))
+    .lte('entry_date', toDateStr(end));
+  if(error){ console.error('Could not load recent activity:', error.message); card.style.display='none'; return; }
+
+  const byDate = {};
+  (data || []).forEach(row=>{
+    (byDate[row.entry_date] = byDate[row.entry_date] || []).push({ duration_minutes: row.duration_minutes, intensity: row.activities.intensity });
+  });
+  const loggedDates = Object.keys(byDate);
+  if(loggedDates.length === 0){ card.style.display = 'none'; return; }
+  card.style.display = 'block';
+
+  const dailyValues = loggedDates.map(d => classifyActivityLevel(computeModerateEquivalentMinutes(byDate[d])).value);
+  const avgValue = dailyValues.reduce((a,b)=>a+b, 0) / dailyValues.length;
+  const nearestTier = ACTIVITY_TIERS.reduce((a,b)=> Math.abs(b.value-avgValue) < Math.abs(a.value-avgValue) ? b : a);
+  const profileValue = +getSel('activityGroup');
+  const profileTier = ACTIVITY_TIERS.find(t=> t.value === profileValue);
+
+  const bodyEl = document.getElementById('activityVsProfileBody');
+  const updateRow = document.getElementById('activityUpdateProfileRow');
+  const dayWord = loggedDates.length === 1 ? 'day' : 'days';
+  if(nearestTier.value === profileValue){
+    bodyEl.textContent = `Over the last ${loggedDates.length} logged ${dayWord}, your average activity works out to "${nearestTier.label}" — matching your profile setting.`;
+    updateRow.style.display = 'none';
+  } else {
+    bodyEl.textContent = `Over the last ${loggedDates.length} logged ${dayWord}, your average activity works out to "${nearestTier.label}", but your profile is currently set to "${profileTier ? profileTier.label : profileValue}". Updating it will make your calorie target more accurate.`;
+    updateRow.style.display = 'block';
+    document.getElementById('activityUpdateProfileBtn').dataset.value = nearestTier.value;
+  }
+}
+
+document.getElementById('activityUpdateProfileBtn').onclick = ()=>{
+  const val = document.getElementById('activityUpdateProfileBtn').dataset.value;
+  setSegmented('activityGroup', val);
+  recalc();
+  document.getElementById('activityUpdateProfileStatus').textContent = 'Updated — see Profile & targets for your new numbers.';
+  document.getElementById('activityUpdateProfileRow').style.display = 'none';
+};
+
 // ---------- Wearables mock ----------
 const WEARABLES = [
   {name:'Fitbit', icon:'⌚'},
@@ -3163,6 +3448,77 @@ async function renderTrends(){
     insight += ` Sodium also ran over its guideline on ${sodiumStat.badCount} of ${loggedDates.length} days.`;
   }
   trendInsightEl.textContent = insight;
+  renderActivityTrends(dates);
+}
+
+async function renderActivityTrends(dates){
+  if(!currentUser) return;
+  const { data, error } = await db
+    .from('activity_entries')
+    .select('entry_date, duration_minutes, calories_burned, activities(intensity)')
+    .eq('user_id', currentUser.id)
+    .gte('entry_date', dates[0])
+    .lte('entry_date', dates[dates.length-1]);
+  if(error){ console.error('Could not load activity trend data:', error.message); return; }
+
+  const byDate = {};
+  (data || []).forEach(row=>{
+    (byDate[row.entry_date] = byDate[row.entry_date] || []).push({
+      duration_minutes: row.duration_minutes, calories_burned: row.calories_burned, intensity: row.activities.intensity,
+    });
+  });
+  const loggedDates = dates.filter(d => (byDate[d]||[]).length > 0);
+  const GENERAL_TARGET_MEM = 30;
+
+  const totalKcal = loggedDates.reduce((s,d)=> s + byDate[d].reduce((s2,e)=> s2+e.calories_burned, 0), 0);
+  const memByDate = {};
+  loggedDates.forEach(d=> memByDate[d] = computeModerateEquivalentMinutes(byDate[d]));
+  const avgMem = loggedDates.length ? loggedDates.reduce((s,d)=> s+memByDate[d], 0) / loggedDates.length : 0;
+  const avgGap = avgMem - GENERAL_TARGET_MEM;
+
+  document.getElementById('activityTrendStats').innerHTML = `
+    <div class="outcome-stat"><div class="v">${loggedDates.length}/${dates.length}</div><div class="l">Days logged</div></div>
+    <div class="outcome-stat"><div class="v">${loggedDates.length ? Math.round(totalKcal/loggedDates.length) : '—'}</div><div class="l">Avg kcal burned/day</div></div>
+    <div class="outcome-stat"><div class="v">${loggedDates.length ? (avgGap>=0?'+':'') + Math.round(avgGap) + ' min' : '—'}</div><div class="l">Avg gap vs. 30 min/day</div></div>
+  `;
+
+  const kcalChart = document.getElementById('activityKcalChart');
+  const maxKcal = Math.max(300, ...loggedDates.map(d=> byDate[d].reduce((s,e)=>s+e.calories_burned,0)));
+  kcalChart.innerHTML = dates.map(d=>{
+    const entries = byDate[d] || [];
+    const dayNum = new Date(d+'T00:00:00').getDate();
+    if(entries.length === 0){
+      return `<div class="trend-bar-wrap" title="${d}: no activity logged">
+        <div class="trend-bar-track"><div class="trend-bar empty" style="height:4%"></div></div>
+        <div class="trend-day-label">${dayNum}</div>
+      </div>`;
+    }
+    const kcal = entries.reduce((s,e)=>s+e.calories_burned,0);
+    const pct = Math.max(4, Math.min(100, (kcal/maxKcal)*100));
+    return `<div class="trend-bar-wrap" title="${d}: ${Math.round(kcal)} kcal burned">
+      <div class="trend-bar-track"><div class="trend-bar met" style="height:${pct}%"></div></div>
+      <div class="trend-day-label">${dayNum}</div>
+    </div>`;
+  }).join('');
+
+  const memChart = document.getElementById('activityMemChart');
+  const maxMem = Math.max(GENERAL_TARGET_MEM * 2, ...loggedDates.map(d=>memByDate[d]));
+  memChart.innerHTML = dates.map(d=>{
+    const dayNum = new Date(d+'T00:00:00').getDate();
+    if(!(d in memByDate)){
+      return `<div class="trend-bar-wrap" title="${d}: no activity logged">
+        <div class="trend-bar-track"><div class="trend-bar empty" style="height:4%"></div></div>
+        <div class="trend-day-label">${dayNum}</div>
+      </div>`;
+    }
+    const mem = memByDate[d];
+    const pct = Math.max(4, Math.min(100, (mem/maxMem)*100));
+    const cls = mem >= GENERAL_TARGET_MEM ? 'met' : 'short';
+    return `<div class="trend-bar-wrap" title="${d}: ${Math.round(mem)} moderate-equivalent min">
+      <div class="trend-bar-track"><div class="trend-bar ${cls}" style="height:${pct}%"></div></div>
+      <div class="trend-day-label">${dayNum}</div>
+    </div>`;
+  }).join('');
 }
 
 // ---------- Sample data (testing utility) ----------
