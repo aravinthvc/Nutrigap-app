@@ -107,7 +107,7 @@ function parseDurationSeconds(s){
   return isNaN(n) ? 0 : n;
 }
 
-async function syncFitbit(ctx){
+async function syncFitbitExerciseSessions(ctx){
   const { userId, accessToken, activitiesByKeyword } = ctx;
   const fallback = activitiesByKeyword['fitbit moderate'];
 
@@ -145,6 +145,69 @@ async function syncFitbit(ctx){
       source: 'fitbit', external_id: p.name || `fitbit-${ex.interval.startTime}`,
     };
   }).filter(Boolean);
+}
+
+// Passive, non-workout activity — steps/movement the device tracked in
+// the background, bucketed by intensity. Unlike `exercise` (deliberate,
+// user-started sessions), this is the data most Fitbit wearers actually
+// generate day to day without pressing "start workout." The `active-minutes`
+// data type's activityLevel enum (LIGHT/MODERATE/VIGOROUS) maps directly
+// onto this app's own intensity taxonomy and the generic "Fitbit-tracked
+// activity" reference rows created in 08_wearable_integrations.sql.
+async function syncFitbitActiveMinutes(ctx){
+  const { userId, accessToken, activitiesByKeyword } = ctx;
+  const levelToActivity = {
+    LIGHT: activitiesByKeyword['fitbit light'],
+    MODERATE: activitiesByKeyword['fitbit moderate'],
+    VIGOROUS: activitiesByKeyword['fitbit vigorous'],
+  };
+
+  const since = new Date(); since.setDate(since.getDate() - 7);
+  const url = `https://health.googleapis.com/v4/users/me/dataTypes/active-minutes/dataPoints?pageSize=50`;
+  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+  if (!res.ok) throw new Error('Google Health active-minutes fetch failed: ' + await res.text());
+  const data = await res.json();
+  const points = (data.dataPoints || []).filter(p => {
+    const st = p.activeMinutes && p.activeMinutes.interval && p.activeMinutes.interval.startTime;
+    return st && new Date(st) >= since;
+  });
+
+  // Sum minutes per day per level first — Google may return several
+  // smaller intervals across a day rather than one row per day.
+  const byDayLevel = {};
+  points.forEach(p => {
+    const day = p.activeMinutes.interval.startTime.slice(0,10);
+    const levels = p.activeMinutes.activeMinutesByActivityLevel || [];
+    byDayLevel[day] = byDayLevel[day] || { LIGHT: 0, MODERATE: 0, VIGOROUS: 0 };
+    levels.forEach(l => {
+      const mins = parseFloat(l.activeMinutes) || 0;
+      if (byDayLevel[day][l.activityLevel] !== undefined) byDayLevel[day][l.activityLevel] += mins;
+    });
+  });
+
+  const rows = [];
+  Object.entries(byDayLevel).forEach(([day, levels]) => {
+    ['LIGHT','MODERATE','VIGOROUS'].forEach(level => {
+      const minutes = Math.round(levels[level]);
+      const activity = levelToActivity[level];
+      if (minutes > 0 && activity) rows.push({
+        user_id: userId, entry_date: day, activity_id: activity.id, duration_minutes: minutes,
+        calories_burned: Math.round(activity.met * 70 * (minutes/60)),
+        source: 'fitbit', external_id: `fitbit-active-${day}-${level.toLowerCase()}`,
+      });
+    });
+  });
+  return rows;
+}
+
+async function syncFitbit(ctx){
+  // Combine deliberate workout sessions with passive daily activity —
+  // two different Google Health data types, merged into one row set.
+  const [sessions, activeMinutes] = await Promise.all([
+    syncFitbitExerciseSessions(ctx),
+    syncFitbitActiveMinutes(ctx),
+  ]);
+  return [...sessions, ...activeMinutes];
 }
 
 // Best-effort Strava activity-type -> our activities.keywords mapping.
