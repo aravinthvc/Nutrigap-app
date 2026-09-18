@@ -124,10 +124,12 @@ async function syncFitbitExerciseSessions(ctx){
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
   if (!res.ok) throw new Error('Google Health exercise fetch failed: ' + await res.text());
   const data = await res.json();
+  console.error('DEBUG exercise raw response:', JSON.stringify(data).slice(0, 2000));
   const points = (data.dataPoints || []).filter(p => {
     const startTime = p.exercise && p.exercise.interval && p.exercise.interval.startTime;
     return startTime && new Date(startTime) >= since;
   });
+  console.error(`DEBUG exercise: ${(data.dataPoints||[]).length} raw points, ${points.length} within last 7 days`);
 
   return points.map(p => {
     const ex = p.exercise;
@@ -167,10 +169,12 @@ async function syncFitbitActiveMinutes(ctx){
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
   if (!res.ok) throw new Error('Google Health active-minutes fetch failed: ' + await res.text());
   const data = await res.json();
+  console.error('DEBUG active-minutes raw response:', JSON.stringify(data).slice(0, 2000));
   const points = (data.dataPoints || []).filter(p => {
     const st = p.activeMinutes && p.activeMinutes.interval && p.activeMinutes.interval.startTime;
     return st && new Date(st) >= since;
   });
+  console.error(`DEBUG active-minutes: ${(data.dataPoints||[]).length} raw points, ${points.length} within last 7 days`);
 
   // Sum minutes per day per level first — Google may return several
   // smaller intervals across a day rather than one row per day.
