@@ -304,6 +304,7 @@ module.exports = async function handler(req, res) {
 
     const ctx = { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, userId: user.id, accessToken: conn.access_token, activitiesByKeyword, activitiesList };
     const rows = provider === 'fitbit' ? await syncFitbit(ctx) : await syncStrava(ctx);
+    console.error(`DEBUG rows built: ${rows.length}`, JSON.stringify(rows).slice(0, 1500));
 
     let imported = 0;
     if (rows.length) {
@@ -315,8 +316,10 @@ module.exports = async function handler(req, res) {
         },
         body: JSON.stringify(rows),
       });
+      const insertBodyText = await insertRes.text();
+      console.error(`DEBUG insert response: status=${insertRes.status} ok=${insertRes.ok}`, insertBodyText.slice(0, 1500));
       if (insertRes.ok) {
-        const inserted = await insertRes.json();
+        const inserted = JSON.parse(insertBodyText);
         imported = Array.isArray(inserted) ? inserted.length : 0;
       }
     }
