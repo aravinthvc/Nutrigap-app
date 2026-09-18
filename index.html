@@ -343,6 +343,16 @@
   .sync-stat .v{ font-family:'Fraunces', serif; font-size:22px; }
   .sync-stat .l{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
 
+  .real-wearable-row{
+    display:flex; align-items:center; justify-content:space-between; gap:14px; flex-wrap:wrap;
+    padding:14px 0; border-bottom:1px solid var(--line-soft);
+  }
+  .real-wearable-row:last-child{ border-bottom:none; }
+  .real-wearable-row .rw-name{ font-weight:500; font-size:14.5px; }
+  .real-wearable-row .rw-meta{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
+  .real-wearable-row .rw-actions{ display:flex; gap:8px; align-items:center; flex-shrink:0; }
+  .rw-badge{ font-size:11px; padding:3px 9px; border-radius:20px; background:var(--teal-wash); color:var(--teal-deep); }
+
   @media (max-width: 620px){
     .field-row{ grid-template-columns:1fr; }
     .add-row{ grid-template-columns:1fr; }
@@ -1114,11 +1124,21 @@
     <section class="panel" data-panel="wearables">
       <div class="page-head">
         <h1>Connect a wearable</h1>
-        <p>Sync activity and sleep data so your energy target adjusts to what you actually did today.</p>
+        <p>Sync activity data so your Activity Log fills in automatically, on top of anything you log by hand.</p>
       </div>
-      <div class="card">
+
+      <div id="wearableToast" class="note" style="display:none; margin-bottom:0;"></div>
+
+      <div class="card" style="margin-top:16px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Fitbit & Strava</h3>
+        <div class="note" style="margin-top:0;">Real OAuth connections — your Fitbit/Strava password is never seen by this app, and your access tokens are stored server-side only, never in your browser.</div>
+        <div id="realWearableList" style="margin-top:14px;"></div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Other devices</h3>
         <div class="wearable-grid" id="wearableGrid"></div>
-        <div class="note">This prototype simulates a connection locally. A live build authenticates through each brand's official OAuth flow (Fitbit Web API, Google Fit / Health Connect, Garmin Connect, Apple HealthKit via a companion iOS app) and never stores your wearable password.</div>
+        <div class="note">These remaining ones are still simulated locally in this prototype — a live build would authenticate through each brand's own OAuth flow (Google Fit / Health Connect, Garmin Connect, Apple HealthKit via a companion iOS app) the same way Fitbit and Strava now do.</div>
 
         <div class="sync-stats" id="syncStats" style="display:none;">
           <div class="sync-stat"><div class="v">8,412</div><div class="l">Steps today</div></div>
@@ -1152,6 +1172,11 @@ function showApp(user){
     .then(loadProfile)
     .then(()=> refreshDietLog())
     .then(()=> loadActivities())
+    .then(()=>{
+      // If we just landed back from a Fitbit/Strava OAuth redirect, jump
+      // straight to the Wearables page so the status/toast are visible.
+      if(handleWearableRedirect()) showPanel('wearables');
+    })
     .catch(e=> console.error('Startup error:', e));
 }
 
@@ -1287,6 +1312,7 @@ function showPanel(id){
   if(id === 'medical') loadSavedReports();
   if(id === 'visits') loadVisits();
   if(id === 'activity') refreshActivityLog();
+  if(id === 'wearables') renderRealWearables();
 }
 showPanel('profile');
 
@@ -3399,7 +3425,6 @@ document.getElementById('activityUpdateProfileBtn').onclick = ()=>{
 
 // ---------- Wearables mock ----------
 const WEARABLES = [
-  {name:'Fitbit', icon:'⌚'},
   {name:'Apple Health', icon:'🍏'},
   {name:'Garmin', icon:'🛰️'},
   {name:'Google Fit', icon:'📶'},
@@ -3421,6 +3446,137 @@ WEARABLES.forEach(w=>{
   };
   wGrid.appendChild(div);
 });
+
+// ---------- Real wearable integrations (Fitbit, Strava — live OAuth) ----------
+// Fill these in once you've registered each app (see deployment notes).
+// FITBIT_CLIENT_ID is actually the Google Health API OAuth client (Google
+// retired the legacy Fitbit Web API in September 2026) — kept this name
+// for continuity since that's how you think of this connection.
+const FITBIT_CLIENT_ID = 'YOUR_FITBIT_CLIENT_ID';
+const STRAVA_CLIENT_ID = 'YOUR_STRAVA_CLIENT_ID';
+
+const REAL_WEARABLES = [
+  {
+    provider: 'fitbit', name: 'Fitbit', icon: '⌚',
+    authUrl: (redirectUri, state) => `https://accounts.google.com/o/oauth2/v2/auth?client_id=${FITBIT_CLIENT_ID}&redirect_uri=${encodeURIComponent(redirectUri)}&response_type=code&access_type=offline&prompt=consent&scope=${encodeURIComponent('https://www.googleapis.com/auth/googlehealth.activity_and_fitness.readonly')}&state=${encodeURIComponent(state)}`,
+  },
+  {
+    provider: 'strava', name: 'Strava', icon: '🚴',
+    authUrl: (redirectUri, state) => `https://www.strava.com/oauth/authorize?client_id=${STRAVA_CLIENT_ID}&response_type=code&redirect_uri=${encodeURIComponent(redirectUri)}&approval_prompt=auto&scope=${encodeURIComponent('activity:read_all')}&state=${encodeURIComponent(state)}`,
+  },
+];
+
+async function getUserAccessToken(){
+  const { data: { session } } = await db.auth.getSession();
+  return session ? session.access_token : null;
+}
+
+async function loadWearableStatus(){
+  if(!currentUser) return {};
+  const { data, error } = await db.from('wearable_status').select('*').eq('user_id', currentUser.id);
+  if(error){ console.error('Could not load wearable status:', error.message); return {}; }
+  const byProvider = {};
+  (data || []).forEach(row => { byProvider[row.provider] = row; });
+  return byProvider;
+}
+
+async function renderRealWearables(){
+  const listEl = document.getElementById('realWearableList');
+  const statusByProvider = await loadWearableStatus();
+
+  listEl.innerHTML = REAL_WEARABLES.map(w=>{
+    const status = statusByProvider[w.provider];
+    const connected = status && status.connected;
+    const lastSync = status && status.last_synced_at
+      ? new Date(status.last_synced_at).toLocaleString()
+      : 'Never synced';
+    return `<div class="real-wearable-row" data-provider="${w.provider}">
+      <div>
+        <div class="rw-name">${w.icon} ${w.name} ${connected ? '<span class="rw-badge">Connected</span>' : ''}</div>
+        <div class="rw-meta">${connected ? lastSync + (status.last_sync_note ? ' · ' + status.last_sync_note : '') : 'Not connected'}</div>
+      </div>
+      <div class="rw-actions">
+        ${connected
+          ? `<button class="btn ghost small rw-sync-btn">Sync now</button><button class="btn ghost small rw-disconnect-btn">Disconnect</button>`
+          : `<button class="btn small rw-connect-btn">Connect</button>`}
+      </div>
+    </div>`;
+  }).join('');
+
+  listEl.querySelectorAll('.rw-connect-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const provider = btn.closest('.real-wearable-row').dataset.provider;
+      const w = REAL_WEARABLES.find(x=>x.provider===provider);
+      const token = await getUserAccessToken();
+      if(!token) return;
+      const redirectUri = `${location.origin}/api/${provider}-callback`;
+      location.href = w.authUrl(redirectUri, token);
+    };
+  });
+  listEl.querySelectorAll('.rw-sync-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const row = btn.closest('.real-wearable-row');
+      const provider = row.dataset.provider;
+      const token = await getUserAccessToken();
+      if(!token) return;
+      btn.disabled = true; btn.textContent = 'Syncing…';
+      try{
+        const res = await fetch('/api/wearable-sync', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
+          body: JSON.stringify({ provider }),
+        });
+        const data = await res.json();
+        if(!res.ok) throw new Error(data.error || 'Sync failed');
+        await renderRealWearables();
+      } catch(e){
+        console.error('Sync error:', e);
+        row.querySelector('.rw-meta').textContent = "Couldn't sync — try again in a moment.";
+        btn.disabled = false; btn.textContent = 'Sync now';
+      }
+    };
+  });
+  listEl.querySelectorAll('.rw-disconnect-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const provider = btn.closest('.real-wearable-row').dataset.provider;
+      const token = await getUserAccessToken();
+      if(!token) return;
+      showInlineConfirm(btn, `Disconnect ${provider}? You can reconnect any time.`, async ()=>{
+        await fetch('/api/wearable-disconnect', {
+          method: 'POST',
+          headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
+          body: JSON.stringify({ provider }),
+        });
+        await renderRealWearables();
+      });
+    };
+  });
+}
+
+// Handle the redirect back from a Fitbit/Strava OAuth callback — called
+// from showApp() once auth has resolved, so it can also switch panels.
+function handleWearableRedirect(){
+  const hash = location.hash || '';
+  const qIndex = hash.indexOf('?');
+  if(qIndex === -1) return false;
+  const params = new URLSearchParams(hash.slice(qIndex+1));
+  const connected = params.get('connected');
+  const wearableError = params.get('wearable_error');
+  if(!connected && !wearableError) return false;
+
+  const toast = document.getElementById('wearableToast');
+  if(connected){
+    toast.style.display = 'block';
+    toast.style.color = 'var(--teal-deep)';
+    toast.textContent = `${connected[0].toUpperCase()+connected.slice(1)} connected — click "Sync now" to pull in recent activity.`;
+  } else if(wearableError){
+    toast.style.display = 'block';
+    toast.style.color = 'var(--rust)';
+    toast.textContent = `Couldn't connect ${wearableError} — please try again.`;
+  }
+  history.replaceState(null, '', location.pathname + '#wearables');
+  return true;
+}
 
 // ---------- Date picker (diet log) ----------
 const logDateInput = document.getElementById('logDateInput');
