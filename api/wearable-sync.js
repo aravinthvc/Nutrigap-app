@@ -124,12 +124,10 @@ async function syncFitbitExerciseSessions(ctx){
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
   if (!res.ok) throw new Error('Google Health exercise fetch failed: ' + await res.text());
   const data = await res.json();
-  console.error('DEBUG exercise raw response:', JSON.stringify(data).slice(0, 2000));
   const points = (data.dataPoints || []).filter(p => {
     const startTime = p.exercise && p.exercise.interval && p.exercise.interval.startTime;
     return startTime && new Date(startTime) >= since;
   });
-  console.error(`DEBUG exercise: ${(data.dataPoints||[]).length} raw points, ${points.length} within last 7 days`);
 
   return points.map(p => {
     const ex = p.exercise;
@@ -169,12 +167,10 @@ async function syncFitbitActiveMinutes(ctx){
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
   if (!res.ok) throw new Error('Google Health active-minutes fetch failed: ' + await res.text());
   const data = await res.json();
-  console.error('DEBUG active-minutes raw response:', JSON.stringify(data).slice(0, 2000));
   const points = (data.dataPoints || []).filter(p => {
     const st = p.activeMinutes && p.activeMinutes.interval && p.activeMinutes.interval.startTime;
     return st && new Date(st) >= since;
   });
-  console.error(`DEBUG active-minutes: ${(data.dataPoints||[]).length} raw points, ${points.length} within last 7 days`);
 
   // Sum minutes per day per level first — Google may return several
   // smaller intervals across a day rather than one row per day.
@@ -304,7 +300,6 @@ module.exports = async function handler(req, res) {
 
     const ctx = { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, userId: user.id, accessToken: conn.access_token, activitiesByKeyword, activitiesList };
     const rows = provider === 'fitbit' ? await syncFitbit(ctx) : await syncStrava(ctx);
-    console.error(`DEBUG rows built: ${rows.length}`, JSON.stringify(rows).slice(0, 1500));
 
     let imported = 0;
     if (rows.length) {
@@ -316,11 +311,13 @@ module.exports = async function handler(req, res) {
         },
         body: JSON.stringify(rows),
       });
-      const insertBodyText = await insertRes.text();
-      console.error(`DEBUG insert response: status=${insertRes.status} ok=${insertRes.ok}`, insertBodyText.slice(0, 1500));
       if (insertRes.ok) {
-        const inserted = JSON.parse(insertBodyText);
+        const inserted = await insertRes.json();
         imported = Array.isArray(inserted) ? inserted.length : 0;
+      } else {
+        // Never swallow this silently again — a failed insert should be
+        // visible in logs even outside an active debugging session.
+        console.error('Wearable sync insert failed:', insertRes.status, await insertRes.text());
       }
     }
 
