@@ -111,13 +111,23 @@ async function syncFitbit(ctx){
   const { userId, accessToken, activitiesByKeyword } = ctx;
   const fallback = activitiesByKeyword['fitbit moderate'];
 
+  // Deliberately no server-side filter here. `exercise` is a Session-kind
+  // record (unlike interval types like steps), and session filtering uses
+  // a different field convention that isn't fully documented — a first
+  // attempt using the interval-type convention (interval.start_time)
+  // failed with INVALID_DATA_POINT_FILTER against the live API. Rather
+  // than guess again, fetch recent sessions unfiltered and restrict to
+  // the last 7 days in code below — avoids depending on getting Google's
+  // exact filter syntax right for this specific record kind.
   const since = new Date(); since.setDate(since.getDate() - 7);
-  const filter = `exercise.interval.start_time >= "${since.toISOString()}"`;
-  const url = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?filter=${encodeURIComponent(filter)}&pageSize=50`;
+  const url = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?pageSize=50`;
   const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
   if (!res.ok) throw new Error('Google Health exercise fetch failed: ' + await res.text());
   const data = await res.json();
-  const points = data.dataPoints || [];
+  const points = (data.dataPoints || []).filter(p => {
+    const startTime = p.exercise && p.exercise.interval && p.exercise.interval.startTime;
+    return startTime && new Date(startTime) >= since;
+  });
 
   return points.map(p => {
     const ex = p.exercise;
