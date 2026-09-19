@@ -211,6 +211,12 @@
   .outcome-stat .v{ font-family:'Fraunces', serif; font-size:16.5px; color:var(--teal-deep); }
   .outcome-stat .l{ font-size:11.5px; color:var(--ink-soft); margin-top:3px; }
   .outcome-note{ font-size:13px; color:var(--ink-soft); margin:0; line-height:1.55; }
+  details.table-toggle{ margin-top:12px; font-size:12.5px; }
+  details.table-toggle summary{ cursor:pointer; color:var(--ink-soft); user-select:none; }
+  details.table-toggle summary:hover{ color:var(--ink); }
+  .data-table-wrap{ max-height:280px; overflow:auto; margin-top:8px; border:1px solid var(--line); border-radius:var(--radius-s); }
+  .data-table-wrap table.report{ margin-top:0; }
+  .data-table-wrap table.report th{ position:sticky; top:0; background:var(--panel); z-index:1; }
 
   .note{
     font-size:13px; color:var(--ink-soft);
@@ -727,12 +733,12 @@
               <div class="note" style="margin-top:6px;">Your last logged weigh-ins. Day-to-day shifts of half a kilo or more are normal — water, food volume, and timing all move the scale.</div>
             </div>
           </div>
-
-          <div class="card" id="outcomeCard" style="margin-top:20px;">
-            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your transition</h3>
-            <div id="outcomeBody"><div class="note">Add a few days to your diet log and a weigh-in or two to see your real trajectory here.</div></div>
-          </div>
         </div>
+      </div>
+
+      <div class="card" id="outcomeCard" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your transition</h3>
+        <div id="outcomeBody"><div class="note">Add a few days to your diet log and a weigh-in or two to see your real trajectory here.</div></div>
       </div>
     </section>
 
@@ -1205,6 +1211,12 @@ function showApp(user){
       // If we just landed back from a Fitbit/Strava OAuth redirect, jump
       // straight to the Wearables page so the status/toast are visible.
       if(handleWearableRedirect()) showPanel('wearables');
+    })
+    .then(()=>{
+      // Fire-and-forget: syncs any stale, already-connected wearable in the
+      // background. Deliberately not awaited/returned here, so it never
+      // delays the rest of the app from finishing its load.
+      autoSyncWearablesIfStale();
     })
     .catch(e=> console.error('Startup error:', e));
 }
@@ -1775,6 +1787,7 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   }
 
   const svg = buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayIndex });
+  const tableHtml = buildTrajectoryTable({ days, actual, goalLine, intakeByDate, exerciseBurnByDate, weightByDate, endStr, bmr });
 
   // One more check right before writing to the DOM — a newer call could
   // have finished its own network round trip while we built the chart above.
@@ -1785,11 +1798,45 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
     ${goalNote}
     <div id="trajectoryChartWrap">${svg}</div>
     <p class="outcome-note" style="margin-top:10px;">${predictedText}</p>
+    <details class="table-toggle">
+      <summary>View data as table</summary>
+      ${tableHtml}
+    </details>
   `;
 }
 
+function buildTrajectoryTable({ days, actual, goalLine, intakeByDate, exerciseBurnByDate, weightByDate, endStr, bmr }){
+  const sedentaryBaseline = bmr * 1.2;
+  const rows = days.map((d,i)=>{
+    const isHistorical = d <= endStr;
+    const intake = isHistorical ? intakeByDate[d] : null;
+    const burn = isHistorical ? (exerciseBurnByDate[d] || 0) : null;
+    const balance = (isHistorical && intake != null) ? Math.round(intake - sedentaryBaseline - burn) : null;
+    const isWeighIn = weightByDate[d] != null;
+    const actualVal = actual[i];
+    const goalVal = goalLine ? goalLine[i] : null;
+    let note = '';
+    if(isWeighIn) note = 'Weigh-in';
+    else if(!isHistorical) note = 'Projected pace';
+    else if(intake == null) note = 'Not logged';
+    return `<tr>
+      <td>${friendlyDate(d)}</td>
+      <td>${intake != null ? Math.round(intake) : '—'}</td>
+      <td>${burn != null ? Math.round(burn) : '—'}</td>
+      <td>${balance != null ? (balance>0?'+':'')+balance : '—'}</td>
+      <td>${actualVal != null ? actualVal.toFixed(1) : '—'}</td>
+      <td>${goalVal != null ? goalVal.toFixed(1) : '—'}</td>
+      <td>${note}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="data-table-wrap"><table class="report">
+    <thead><tr><th>Date</th><th>Intake (kcal)</th><th>Exercise burn (kcal)</th><th>Balance</th><th>Actual (kg)</th><th>Goal pace (kg)</th><th>Note</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table></div>`;
+}
+
 function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayIndex }){
-  const w = 640, h = 220, padL = 42, padR = 72, padT = 16, padB = 26;
+  const w = 960, h = 300, padL = 46, padR = 84, padT = 20, padB = 30;
   const n = days.length;
   const allVals = actual.filter(v => v != null);
   if(goalLine) allVals.push(...goalLine.filter(v => v != null));
@@ -1824,6 +1871,17 @@ function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayI
     return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w-padR}" y2="${y.toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>
       <text x="${(padL-6).toFixed(1)}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-faint)" font-family="IBM Plex Mono, monospace">${v.toFixed(1)}</text>`;
   }).join('');
+
+  const shortLabel = (dateStr) => {
+    const d = new Date(dateStr + 'T00:00:00');
+    return d.toLocaleDateString(undefined, { month:'short', day:'numeric' });
+  };
+  const xTickStep = Math.max(1, Math.round(n / 12 / 7) * 7) || 7;
+  let xAxisLabels = '';
+  for(let i=0; i<n; i+=xTickStep){
+    xAxisLabels += `<text x="${xScale(i).toFixed(1)}" y="${(h-padB+16).toFixed(1)}" text-anchor="middle" font-size="10" fill="var(--ink-faint)" font-family="IBM Plex Sans, sans-serif">${shortLabel(days[i])}</text>`;
+  }
+  xAxisLabels += `<line x1="${padL}" y1="${(h-padB).toFixed(1)}" x2="${w-padR}" y2="${(h-padB).toFixed(1)}" stroke="var(--line)" stroke-width="1"/>`;
 
   const bandRect = band
     ? `<rect x="${padL}" y="${yScale(band[1]).toFixed(1)}" width="${(w-padL-padR).toFixed(1)}" height="${(yScale(band[0])-yScale(band[1])).toFixed(1)}" fill="var(--steel-wash)" opacity="0.7"/>`
@@ -1866,6 +1924,7 @@ function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayI
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="overflow:visible; display:block;">
     ${bandRect}
     ${gridLines}
+    ${xAxisLabels}
     ${todayMarker}
     ${goalPath ? `<path d="${goalPath}" fill="none" stroke="var(--steel)" stroke-width="2" stroke-dasharray="5,4"/>` : ''}
     <path d="${actualPath}" fill="none" stroke="var(--teal)" stroke-width="2"/>
@@ -3882,6 +3941,46 @@ async function loadWearableStatus(){
   const byProvider = {};
   (data || []).forEach(row => { byProvider[row.provider] = row; });
   return byProvider;
+}
+
+// Quietly syncs any already-connected wearable whose data is stale, right
+// after login/page load — so activity numbers feeding the trajectory graph
+// are current without the person having to remember to hit "Sync now."
+// Gated by a staleness window so a page refresh doesn't re-hit Fitbit/Strava
+// every time, and it never blocks or delays the rest of the app from loading
+// (the caller doesn't await this).
+const WEARABLE_AUTO_SYNC_STALE_MS = 60 * 60 * 1000; // 1 hour
+async function autoSyncWearablesIfStale(){
+  if(!currentUser) return;
+  const statusByProvider = await loadWearableStatus();
+  const now = Date.now();
+  const staleProviders = REAL_WEARABLES.filter(w=>{
+    const status = statusByProvider[w.provider];
+    if(!status || !status.connected) return false;
+    if(!status.last_synced_at) return true;
+    return (now - new Date(status.last_synced_at).getTime()) > WEARABLE_AUTO_SYNC_STALE_MS;
+  });
+  if(staleProviders.length === 0) return;
+
+  const token = await getUserAccessToken();
+  if(!token) return;
+
+  for(const w of staleProviders){
+    try{
+      await fetch('/api/wearable-sync', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
+        body: JSON.stringify({ provider: w.provider }),
+      });
+    } catch(e){
+      console.error('Background wearable sync failed for ' + w.provider + ':', e.message);
+    }
+  }
+  // Freshly synced activity data changes the exercise-burn numbers the
+  // trajectory graph is built on — recompute it. If the Wearables page
+  // happens to be open, refresh its "last synced" timestamps too.
+  if(currentUser) recalc();
+  if(document.querySelector('.panel[data-panel="wearables"].active')) renderRealWearables();
 }
 
 async function renderRealWearables(){
