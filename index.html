@@ -1647,7 +1647,23 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   const windowStart = new Date(); windowStart.setDate(windowStart.getDate() - (TRAJECTORY_WINDOW_DAYS - 1));
   const startStr = toDateStr(windowStart);
   const endStr = toDateStr(today);
-  const days = dateRangeArray(startStr, endStr);
+
+  const loggedWeightsInWindow = state.weightLogs.filter(w => w.logged_date >= startStr);
+  const anchorWeight = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].weight_kg : weight;
+  const anchorDate = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].logged_date : startStr;
+
+  // The goal pace-line runs from the anchor to the deadline — which is
+  // usually in the future. The day axis has to reach that far too, or the
+  // pace-line has nowhere to be drawn but a single point on "today."
+  let deadlineStr = null;
+  if(goal !== 'maintain' && targetWeight && goalWeeks){
+    const deadline = new Date(anchorDate + 'T00:00:00');
+    deadline.setDate(deadline.getDate() + goalWeeks * 7);
+    deadlineStr = toDateStr(deadline);
+  }
+  const chartEndStr = (deadlineStr && deadlineStr > endStr) ? deadlineStr : endStr;
+  const days = dateRangeArray(startStr, chartEndStr);
+  const todayIndex = days.indexOf(endStr);
 
   const [intakeResult, burnResult] = await Promise.all([
     computeDailyIntake(startStr, endStr),
@@ -1661,17 +1677,15 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   const intakeByDate = intakeResult.byDate;
   const exerciseBurnByDate = burnResult.byDate;
 
-  const loggedWeightsInWindow = state.weightLogs.filter(w => w.logged_date >= startStr);
-  const anchorWeight = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].weight_kg : weight;
-  const anchorDate = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].logged_date : startStr;
-
   // Modeled weight from cumulative calorie balance (intake minus a sedentary
   // baseline plus any logged exercise), anchored at the earliest weigh-in we
   // have in the window — or today's profile weight if there isn't one yet.
+  // Stops at today — there's no logged food/activity for future days, so
+  // "actual" must never extend past what's really been logged.
   let cumKcal = 0;
   let loggedDaysCount = 0;
   const modeled = days.map(d=>{
-    if(d < anchorDate) return null;
+    if(d < anchorDate || d > endStr) return null;
     const intake = intakeByDate[d];
     if(intake != null){
       loggedDaysCount++;
@@ -1686,7 +1700,7 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   // calorie-based model. Otherwise fall back to the modeled estimate.
   const weightByDate = {};
   state.weightLogs.forEach(w=>{ weightByDate[w.logged_date] = w.weight_kg; });
-  const actual = days.map((d,i)=> weightByDate[d] != null ? weightByDate[d] : (d < anchorDate ? null : modeled[i]));
+  const actual = days.map((d,i)=> weightByDate[d] != null ? weightByDate[d] : ((d < anchorDate || d > endStr) ? null : modeled[i]));
 
   if(loggedDaysCount === 0 && loggedWeightsInWindow.length < 2){
     if(myRequestId !== trajectoryRequestId) return;
@@ -1716,7 +1730,7 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   let goalLine = null, band = null, goalNote = '';
   if(goal === 'maintain'){
     band = [anchorWeight * 0.985, anchorWeight * 1.015];
-  } else if(targetWeight && goalWeeks){
+  } else if(deadlineStr){
     const totalDays = goalWeeks * 7;
     goalLine = days.map(d=>{
       const dayOffset = (new Date(d) - new Date(anchorDate)) / 86400000;
@@ -1760,7 +1774,7 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
     }
   }
 
-  const svg = buildTrajectorySVG({ days, actual, goalLine, band, targetWeight });
+  const svg = buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayIndex });
 
   // One more check right before writing to the DOM — a newer call could
   // have finished its own network round trip while we built the chart above.
@@ -1774,7 +1788,7 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   `;
 }
 
-function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight }){
+function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight, todayIndex }){
   const w = 640, h = 220, padL = 42, padR = 72, padT = 16, padB = 26;
   const n = days.length;
   const allVals = actual.filter(v => v != null);
@@ -1815,6 +1829,13 @@ function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight }){
     ? `<rect x="${padL}" y="${yScale(band[1]).toFixed(1)}" width="${(w-padL-padR).toFixed(1)}" height="${(yScale(band[0])-yScale(band[1])).toFixed(1)}" fill="var(--steel-wash)" opacity="0.7"/>`
     : '';
 
+  // When the goal pace-line reaches past today, mark where "today" falls so
+  // it's clear the line beyond it is a target pace, not logged history.
+  const todayMarker = (todayIndex != null && todayIndex >= 0 && todayIndex < n - 1)
+    ? `<line x1="${xScale(todayIndex).toFixed(1)}" y1="${padT}" x2="${xScale(todayIndex).toFixed(1)}" y2="${h-padB}" stroke="var(--ink-faint)" stroke-width="1" stroke-dasharray="2,3"/>
+       <text x="${xScale(todayIndex).toFixed(1)}" y="${padT-4}" text-anchor="middle" font-size="10" fill="var(--ink-faint)" font-family="IBM Plex Sans, sans-serif">Today</text>`
+    : '';
+
   const dots = actual.map((v,i)=> v==null ? '' :
     `<circle cx="${xScale(i).toFixed(1)}" cy="${yScale(v).toFixed(1)}" r="2.5" fill="var(--teal)"/>`
   ).join('');
@@ -1845,6 +1866,7 @@ function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight }){
   return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="overflow:visible; display:block;">
     ${bandRect}
     ${gridLines}
+    ${todayMarker}
     ${goalPath ? `<path d="${goalPath}" fill="none" stroke="var(--steel)" stroke-width="2" stroke-dasharray="5,4"/>` : ''}
     <path d="${actualPath}" fill="none" stroke="var(--teal)" stroke-width="2"/>
     ${dots}
