@@ -1581,6 +1581,11 @@ function dateRangeArray(startStr, endStr){
   return out;
 }
 
+// Each returns { byDate, failed }. "failed" is kept distinct from "no rows
+// found" — a query error (RLS hiccup, dropped connection, session still
+// settling right after a page refresh) must never be treated the same as
+// "you genuinely haven't logged anything," or the trajectory graph would
+// silently vanish back to the static fallback on a transient blip.
 async function computeDailyIntake(startStr, endStr){
   const { data, error } = await db
     .from('diet_entries')
@@ -1588,13 +1593,13 @@ async function computeDailyIntake(startStr, endStr){
     .eq('user_id', currentUser.id)
     .gte('entry_date', startStr)
     .lte('entry_date', endStr);
-  if(error){ console.error('Could not load diet history:', error.message); return {}; }
+  if(error){ console.error('Could not load diet history:', error.message); return { byDate:{}, failed:true }; }
   const byDate = {};
   (data || []).forEach(row=>{
     const kcal = (row.foods ? row.foods.kcal : 0) * row.servings;
     byDate[row.entry_date] = (byDate[row.entry_date] || 0) + kcal;
   });
-  return byDate;
+  return { byDate, failed:false };
 }
 
 async function computeDailyExerciseBurn(startStr, endStr){
@@ -1604,20 +1609,26 @@ async function computeDailyExerciseBurn(startStr, endStr){
     .eq('user_id', currentUser.id)
     .gte('entry_date', startStr)
     .lte('entry_date', endStr);
-  if(error){ console.error('Could not load activity history:', error.message); return {}; }
+  if(error){ console.error('Could not load activity history:', error.message); return { byDate:{}, failed:true }; }
   const byDate = {};
   (data || []).forEach(row=>{
     byDate[row.entry_date] = (byDate[row.entry_date] || 0) + (row.calories_burned || 0);
   });
-  return byDate;
+  return { byDate, failed:false };
 }
 
 // Builds the Current/Goal/Actual trajectory graph from real logged data. Falls
 // back to the old calorie-math projection when there isn't enough history yet.
+// Bumped on every call so an older, slower-resolving call can tell it's
+// been superseded and bail out instead of overwriting a newer render.
+let trajectoryRequestId = 0;
+
 async function renderTrajectory(weight, goalAdjKcal, goal){
   const outEl = document.getElementById('outcomeBody');
   const headingEl = document.querySelector('#outcomeCard h3');
   if(!currentUser || !outEl) return;
+
+  const myRequestId = ++trajectoryRequestId;
 
   if(goal === 'manage'){
     headingEl.textContent = 'Your transition';
@@ -1638,10 +1649,17 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   const endStr = toDateStr(today);
   const days = dateRangeArray(startStr, endStr);
 
-  const [intakeByDate, exerciseBurnByDate] = await Promise.all([
+  const [intakeResult, burnResult] = await Promise.all([
     computeDailyIntake(startStr, endStr),
     computeDailyExerciseBurn(startStr, endStr)
   ]);
+  // A newer render was kicked off while we were waiting on the network —
+  // drop this one rather than let it overwrite the newer, correct result.
+  if(myRequestId !== trajectoryRequestId) return;
+
+  const dataLoadFailed = intakeResult.failed || burnResult.failed;
+  const intakeByDate = intakeResult.byDate;
+  const exerciseBurnByDate = burnResult.byDate;
 
   const loggedWeightsInWindow = state.weightLogs.filter(w => w.logged_date >= startStr);
   const anchorWeight = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].weight_kg : weight;
@@ -1671,11 +1689,25 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
   const actual = days.map((d,i)=> weightByDate[d] != null ? weightByDate[d] : (d < anchorDate ? null : modeled[i]));
 
   if(loggedDaysCount === 0 && loggedWeightsInWindow.length < 2){
-    headingEl.textContent = 'Expected outcome';
-    outEl.innerHTML = `<p class="outcome-note">Log a few days of food (and a couple of weigh-ins, if you can) to start seeing your real trajectory here. Until then, here's the calorie math worked forward from your profile:</p>${staticProjectionHTML(weight, goalAdjKcal, goal)}`;
+    if(myRequestId !== trajectoryRequestId) return;
+    headingEl.textContent = 'Your transition';
+    if(dataLoadFailed){
+      // We couldn't actually check — never claim "you haven't logged
+      // anything" when the truth is "the request to check failed."
+      outEl.innerHTML = `<p class="outcome-note">Couldn't load your recent log history just now — this is usually a brief connection hiccup, not lost data. Try refreshing in a moment.</p>`;
+    } else {
+      headingEl.textContent = 'Expected outcome';
+      outEl.innerHTML = `<p class="outcome-note">Log a few days of food (and a couple of weigh-ins, if you can) to start seeing your real trajectory here. Until then, here's the calorie math worked forward from your profile:</p>${staticProjectionHTML(weight, goalAdjKcal, goal)}`;
+    }
     return;
   }
   headingEl.textContent = 'Your transition';
+  // We have *some* real data (weigh-ins and/or a few logged days) but one of
+  // the two history queries failed — say so plainly above the chart rather
+  // than silently drawing it from incomplete numbers.
+  const partialFailureNote = dataLoadFailed
+    ? `<p class="outcome-note" style="color:var(--rust);">Part of your recent log history didn't load just now — the graph below may be missing a few days. Try refreshing in a moment.</p>`
+    : '';
 
   // Goal line: for lose/gain, a straight pace-line from the anchor to the
   // target weight by the deadline — the rate you'd need, not a prediction of
@@ -1730,7 +1762,12 @@ async function renderTrajectory(weight, goalAdjKcal, goal){
 
   const svg = buildTrajectorySVG({ days, actual, goalLine, band, targetWeight });
 
+  // One more check right before writing to the DOM — a newer call could
+  // have finished its own network round trip while we built the chart above.
+  if(myRequestId !== trajectoryRequestId) return;
+
   outEl.innerHTML = `
+    ${partialFailureNote}
     ${goalNote}
     <div id="trajectoryChartWrap">${svg}</div>
     <p class="outcome-note" style="margin-top:10px;">${predictedText}</p>
