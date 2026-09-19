@@ -899,6 +899,7 @@
               <tbody id="activityBody"></tbody>
             </table>
             <div class="empty" id="activityEmpty">No activity logged for this day yet.</div>
+            <div id="activitySaveStatus" style="font-size:11.5px; color:var(--ink-faint); margin-top:10px; min-height:14px;"></div>
           </div>
         </div>
 
@@ -2393,8 +2394,27 @@ function renderLog(){
 
   body.querySelectorAll('.rm').forEach(btn=>{
     btn.onclick = async ()=>{
-      const { error } = await db.from('diet_entries').delete().eq('id', btn.dataset.id);
-      if(error) console.error('Could not remove entry:', error.message);
+      btn.disabled = true;
+      setSaveStatus('Removing…', false);
+      // .select() after delete() makes Supabase return the row(s) it actually
+      // deleted. Without it, a delete blocked by a missing/misconfigured
+      // Row Level Security policy comes back with no error at all — it just
+      // silently deletes zero rows — and the item would appear to "not
+      // delete" with no explanation. Checking data.length catches that.
+      const { data, error } = await db.from('diet_entries').delete().eq('id', btn.dataset.id).select();
+      if(error){
+        console.error('Could not remove entry:', error.message);
+        setSaveStatus("Couldn't remove that item: " + error.message, true);
+        btn.disabled = false;
+        return;
+      }
+      if(!data || data.length === 0){
+        console.error('Delete matched no rows for diet_entries id ' + btn.dataset.id + ' — likely blocked by a Row Level Security policy.');
+        setSaveStatus("That item didn't actually delete — this usually means the database is missing a delete permission. It's on the list to fix.", true);
+        btn.disabled = false;
+        return;
+      }
+      setSaveStatus('Removed.', false);
       await refreshDietLog();
     };
   });
@@ -2402,8 +2422,18 @@ function renderLog(){
     inp.onchange = async ()=>{
       const val = +inp.value;
       if(!val) return;
-      const { error } = await db.from('diet_entries').update({ servings: val }).eq('id', inp.dataset.id);
-      if(error) console.error('Could not update servings:', error.message);
+      const { data, error } = await db.from('diet_entries').update({ servings: val }).eq('id', inp.dataset.id).select();
+      if(error){
+        console.error('Could not update servings:', error.message);
+        setSaveStatus("Couldn't update that: " + error.message, true);
+        return;
+      }
+      if(!data || data.length === 0){
+        console.error('Update matched no rows for diet_entries id ' + inp.dataset.id + ' — likely blocked by a Row Level Security policy.');
+        setSaveStatus("That change didn't actually save — this usually means the database is missing an update permission.", true);
+        return;
+      }
+      setSaveStatus('Saved.', false);
       await refreshDietLog();
     };
   });
@@ -3798,7 +3828,26 @@ function renderActivityTable(){
     </tr>`).join('');
   body.querySelectorAll('.rm').forEach(btn=>{
     btn.onclick = async ()=>{
-      await db.from('activity_entries').delete().eq('id', btn.dataset.id);
+      btn.disabled = true;
+      const statusEl = document.getElementById('activitySaveStatus');
+      // .select() lets us tell "deleted" apart from "silently blocked by a
+      // missing Row Level Security policy" — without it, a blocked delete
+      // returns no error at all, and the row would just reappear with no
+      // explanation after the refresh below.
+      const { data, error } = await db.from('activity_entries').delete().eq('id', btn.dataset.id).select();
+      if(error){
+        console.error('Could not remove activity entry:', error.message);
+        if(statusEl){ statusEl.textContent = "Couldn't remove that: " + error.message; statusEl.style.color = 'var(--rust)'; }
+        btn.disabled = false;
+        return;
+      }
+      if(!data || data.length === 0){
+        console.error('Delete matched no rows for activity_entries id ' + btn.dataset.id + ' — likely blocked by a Row Level Security policy.');
+        if(statusEl){ statusEl.textContent = "That entry didn't actually delete — this usually means the database is missing a delete permission."; statusEl.style.color = 'var(--rust)'; }
+        btn.disabled = false;
+        return;
+      }
+      if(statusEl){ statusEl.textContent = ''; }
       await refreshActivityLog();
     };
   });
