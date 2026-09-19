@@ -681,6 +681,18 @@
             </div>
           </div>
 
+          <div class="field-row" id="targetFieldsRow">
+            <div class="field">
+              <label for="targetWeight">Target weight (kg) — optional</label>
+              <input type="number" id="targetWeight" step="0.1" placeholder="e.g. 62">
+            </div>
+            <div class="field">
+              <label for="goalWeeks">Timeframe (weeks) — optional</label>
+              <input type="number" id="goalWeeks" step="1" min="1" placeholder="e.g. 12">
+            </div>
+          </div>
+          <div class="note" id="targetFieldsNote">Add both to see a pace line on your transition graph below — how fast you'd need to move to hit that weight by then.</div>
+
           <div class="note" id="bodyTypeNote"></div>
         </div>
 
@@ -700,9 +712,25 @@
           </div>
           <div class="note">Calculated with the Mifflin–St Jeor equation and standard activity multipliers. This is a population-level estimate, not a medical measurement — actual needs vary by 10–15%.</div>
 
+          <div class="card" id="weightLogCard" style="margin-top:20px;">
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Weigh-ins</h3>
+            <div class="add-row" style="align-items:flex-end;">
+              <div class="field" style="margin-bottom:0;">
+                <label for="weightLogInput">Today's weight (kg)</label>
+                <input type="number" id="weightLogInput" step="0.1" placeholder="e.g. 67.4">
+              </div>
+              <button class="btn" id="logWeightBtn">Log weight</button>
+            </div>
+            <div id="weightLogHint" style="font-size:12.5px; color:var(--ink-soft); min-height:16px; margin-top:6px;"></div>
+            <div id="weightSparkWrap" style="margin-top:10px; display:none;">
+              <div id="weightSparkChart"></div>
+              <div class="note" style="margin-top:6px;">Your last logged weigh-ins. Day-to-day shifts of half a kilo or more are normal — water, food volume, and timing all move the scale.</div>
+            </div>
+          </div>
+
           <div class="card" id="outcomeCard" style="margin-top:20px;">
-            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Expected outcome</h3>
-            <div id="outcomeBody"></div>
+            <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your transition</h3>
+            <div id="outcomeBody"><div class="note">Add a few days to your diet log and a weigh-in or two to see your real trajectory here.</div></div>
           </div>
         </div>
       </div>
@@ -1169,6 +1197,7 @@ function showApp(user){
   document.getElementById('appShell').style.display = 'grid';
   renderUserChip();
   loadFoods()
+    .then(loadWeightLogs)
     .then(loadProfile)
     .then(()=> refreshDietLog())
     .then(()=> loadActivities())
@@ -1397,13 +1426,13 @@ function recalc(){
   };
   document.getElementById('bodyTypeNote').textContent = frameNote[frame];
 
-  renderOutcome(weight, goalAdj, goal);
+  renderTrajectory(weight, goalAdj, goal);
   renderGaps();
 
   clearTimeout(profileSaveTimer);
   profileSaveTimer = setTimeout(saveProfile, 700);
 }
-['age','sex','height','weight','waist','hip'].forEach(id=>{
+['age','sex','height','weight','waist','hip','targetWeight','goalWeeks'].forEach(id=>{
   document.getElementById(id).addEventListener('input', recalc);
 });
 
@@ -1420,6 +1449,8 @@ async function saveProfile(){
     frame: getSel('frameGroup'),
     activity_level: +getSel('activityGroup'),
     goal: getSel('goalGroup'),
+    target_weight_kg: +document.getElementById('targetWeight').value || null,
+    goal_weeks: +document.getElementById('goalWeeks').value || null,
     updated_at: new Date().toISOString()
   };
   const { error } = await db.from('profiles').upsert(payload);
@@ -1440,13 +1471,15 @@ async function loadProfile(){
     if(data.frame) setSegmented('frameGroup', data.frame);
     if(data.activity_level != null) setSegmented('activityGroup', String(data.activity_level));
     if(data.goal) setSegmented('goalGroup', data.goal);
+    if(data.target_weight_kg != null) document.getElementById('targetWeight').value = data.target_weight_kg;
+    if(data.goal_weeks != null) document.getElementById('goalWeeks').value = data.goal_weeks;
   }
   recalc();
 }
 
-// ---------- Expected outcome projection ----------
+// ---------- Expected outcome projection (fallback, before there's enough log history) ----------
 // 7,700 kcal is the commonly used approximation for 1 kg of body fat energy content.
-function renderOutcome(weight, goalAdjKcal, goal){
+function staticProjectionHTML(weight, goalAdjKcal, goal){
   const weeklyDeltaKg = (goalAdjKcal * 7) / 7700;
   const weeksArr = [4, 8, 12];
   const rows = weeksArr.map(w=>{
@@ -1464,10 +1497,322 @@ function renderOutcome(weight, goalAdjKcal, goal){
     manage: `Your energy target here is set for stability rather than a specific weight change. Track the markers your clinician asked you to watch — this tool does not model outcomes for a diagnosed condition.`
   };
 
-  document.getElementById('outcomeBody').innerHTML = `
+  return `
     <div class="outcome-stats">${rows}</div>
     <p class="outcome-note">${captions[goal]}</p>
   `;
+}
+
+// ---------- Weigh-ins ----------
+async function loadWeightLogs(){
+  if(!currentUser) return;
+  const { data, error } = await db
+    .from('weight_logs')
+    .select('logged_date, weight_kg')
+    .eq('user_id', currentUser.id)
+    .order('logged_date', { ascending: true });
+  if(error){ console.error('Could not load weight logs:', error.message); return; }
+  state.weightLogs = data || [];
+  renderWeightSpark();
+}
+
+async function logWeight(){
+  if(!currentUser) return;
+  const input = document.getElementById('weightLogInput');
+  const hint = document.getElementById('weightLogHint');
+  const val = +input.value;
+  if(!val || val <= 0){
+    hint.textContent = 'Enter a weight first.';
+    hint.style.color = 'var(--rust)';
+    return;
+  }
+  const { error } = await db.from('weight_logs').upsert(
+    { user_id: currentUser.id, logged_date: TODAY_STR, weight_kg: val },
+    { onConflict: 'user_id,logged_date' }
+  );
+  if(error){
+    hint.textContent = 'Could not save: ' + error.message;
+    hint.style.color = 'var(--rust)';
+    return;
+  }
+  hint.style.color = 'var(--ink-soft)';
+  hint.textContent = 'Logged for today.';
+  input.value = '';
+  await loadWeightLogs();
+  recalc();
+}
+document.getElementById('logWeightBtn').onclick = logWeight;
+
+function renderWeightSpark(){
+  const wrap = document.getElementById('weightSparkWrap');
+  const chartEl = document.getElementById('weightSparkChart');
+  const recent = state.weightLogs.slice(-14);
+  if(recent.length < 2){ wrap.style.display = 'none'; return; }
+  wrap.style.display = 'block';
+  const w = 280, h = 60, pad = 10;
+  const values = recent.map(p=>p.weight_kg);
+  const minV = Math.min(...values), maxV = Math.max(...values);
+  const range = (maxV - minV) || 1;
+  const stepX = (w - pad*2) / (recent.length - 1);
+  const coords = recent.map((p,i)=>{
+    const x = pad + i*stepX;
+    const y = h - pad - ((p.weight_kg - minV) / range) * (h - pad*2);
+    return { x, y, logged_date: p.logged_date, weight_kg: p.weight_kg };
+  });
+  const pathD = coords.map((c,i)=> (i===0?'M':'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1)).join(' ');
+  const dots = coords.map(c=>
+    `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.5" fill="var(--teal)" stroke="#fff" stroke-width="1"><title>${c.logged_date}: ${c.weight_kg} kg</title></circle>`
+  ).join('');
+  chartEl.innerHTML = `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="overflow:visible; display:block;">
+    <path d="${pathD}" fill="none" stroke="var(--teal)" stroke-width="1.5"/>
+    ${dots}
+  </svg>`;
+}
+
+// ---------- Your transition: Current vs Goal vs Actual ----------
+const TRAJECTORY_WINDOW_DAYS = 30;
+const KCAL_PER_KG = 7700;
+
+function dateRangeArray(startStr, endStr){
+  const out = [];
+  let d = new Date(startStr + 'T00:00:00');
+  const end = new Date(endStr + 'T00:00:00');
+  while(d <= end){ out.push(toDateStr(d)); d.setDate(d.getDate()+1); }
+  return out;
+}
+
+async function computeDailyIntake(startStr, endStr){
+  const { data, error } = await db
+    .from('diet_entries')
+    .select('entry_date, servings, foods(kcal)')
+    .eq('user_id', currentUser.id)
+    .gte('entry_date', startStr)
+    .lte('entry_date', endStr);
+  if(error){ console.error('Could not load diet history:', error.message); return {}; }
+  const byDate = {};
+  (data || []).forEach(row=>{
+    const kcal = (row.foods ? row.foods.kcal : 0) * row.servings;
+    byDate[row.entry_date] = (byDate[row.entry_date] || 0) + kcal;
+  });
+  return byDate;
+}
+
+async function computeDailyExerciseBurn(startStr, endStr){
+  const { data, error } = await db
+    .from('activity_entries')
+    .select('entry_date, calories_burned')
+    .eq('user_id', currentUser.id)
+    .gte('entry_date', startStr)
+    .lte('entry_date', endStr);
+  if(error){ console.error('Could not load activity history:', error.message); return {}; }
+  const byDate = {};
+  (data || []).forEach(row=>{
+    byDate[row.entry_date] = (byDate[row.entry_date] || 0) + (row.calories_burned || 0);
+  });
+  return byDate;
+}
+
+// Builds the Current/Goal/Actual trajectory graph from real logged data. Falls
+// back to the old calorie-math projection when there isn't enough history yet.
+async function renderTrajectory(weight, goalAdjKcal, goal){
+  const outEl = document.getElementById('outcomeBody');
+  const headingEl = document.querySelector('#outcomeCard h3');
+  if(!currentUser || !outEl) return;
+
+  if(goal === 'manage'){
+    headingEl.textContent = 'Your transition';
+    outEl.innerHTML = `<p class="outcome-note">Your energy target here is set for stability rather than a specific weight change. Track the markers your clinician asked you to watch, and see the Medical section for your report trends over time — this tool does not model outcomes for a diagnosed condition.</p>`;
+    return;
+  }
+
+  const age = +document.getElementById('age').value || 0;
+  const sex = document.getElementById('sex').value;
+  const height = +document.getElementById('height').value || 0;
+  const targetWeight = +document.getElementById('targetWeight').value || null;
+  const goalWeeks = +document.getElementById('goalWeeks').value || null;
+  const bmr = sex === 'male' ? 10*weight + 6.25*height - 5*age + 5 : 10*weight + 6.25*height - 5*age - 161;
+
+  const today = new Date();
+  const windowStart = new Date(); windowStart.setDate(windowStart.getDate() - (TRAJECTORY_WINDOW_DAYS - 1));
+  const startStr = toDateStr(windowStart);
+  const endStr = toDateStr(today);
+  const days = dateRangeArray(startStr, endStr);
+
+  const [intakeByDate, exerciseBurnByDate] = await Promise.all([
+    computeDailyIntake(startStr, endStr),
+    computeDailyExerciseBurn(startStr, endStr)
+  ]);
+
+  const loggedWeightsInWindow = state.weightLogs.filter(w => w.logged_date >= startStr);
+  const anchorWeight = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].weight_kg : weight;
+  const anchorDate = loggedWeightsInWindow.length ? loggedWeightsInWindow[0].logged_date : startStr;
+
+  // Modeled weight from cumulative calorie balance (intake minus a sedentary
+  // baseline plus any logged exercise), anchored at the earliest weigh-in we
+  // have in the window — or today's profile weight if there isn't one yet.
+  let cumKcal = 0;
+  let loggedDaysCount = 0;
+  const modeled = days.map(d=>{
+    if(d < anchorDate) return null;
+    const intake = intakeByDate[d];
+    if(intake != null){
+      loggedDaysCount++;
+      const sedentaryBaseline = bmr * 1.2;
+      const exerciseBurn = exerciseBurnByDate[d] || 0;
+      cumKcal += intake - sedentaryBaseline - exerciseBurn;
+    }
+    return anchorWeight + cumKcal / KCAL_PER_KG;
+  });
+
+  // Where we have a real weigh-in, use it — it corrects any drift in the
+  // calorie-based model. Otherwise fall back to the modeled estimate.
+  const weightByDate = {};
+  state.weightLogs.forEach(w=>{ weightByDate[w.logged_date] = w.weight_kg; });
+  const actual = days.map((d,i)=> weightByDate[d] != null ? weightByDate[d] : (d < anchorDate ? null : modeled[i]));
+
+  if(loggedDaysCount === 0 && loggedWeightsInWindow.length < 2){
+    headingEl.textContent = 'Expected outcome';
+    outEl.innerHTML = `<p class="outcome-note">Log a few days of food (and a couple of weigh-ins, if you can) to start seeing your real trajectory here. Until then, here's the calorie math worked forward from your profile:</p>${staticProjectionHTML(weight, goalAdjKcal, goal)}`;
+    return;
+  }
+  headingEl.textContent = 'Your transition';
+
+  // Goal line: for lose/gain, a straight pace-line from the anchor to the
+  // target weight by the deadline — the rate you'd need, not a prediction of
+  // how your body will actually respond. For maintain, a steady band instead
+  // of a moving target.
+  let goalLine = null, band = null, goalNote = '';
+  if(goal === 'maintain'){
+    band = [anchorWeight * 0.985, anchorWeight * 1.015];
+  } else if(targetWeight && goalWeeks){
+    const totalDays = goalWeeks * 7;
+    goalLine = days.map(d=>{
+      const dayOffset = (new Date(d) - new Date(anchorDate)) / 86400000;
+      if(dayOffset < 0) return null;
+      const t = Math.min(1, Math.max(0, dayOffset / totalDays));
+      return anchorWeight + (targetWeight - anchorWeight) * t;
+    });
+  } else {
+    goalNote = `<p class="outcome-note">Add a target weight and a timeframe above to see a pace line here — the steady rate you'd need to hit it by then.</p>`;
+  }
+
+  // Predicted timeline: a plain linear trend over the last real points we
+  // have (weigh-ins first, modeled days otherwise), shown as a range, never
+  // a single promised date.
+  let predictedText = 'Keep logging — a predicted timeline needs a few more days of data.';
+  const regressionPoints = days.map((d,i)=>({ x:i, y:actual[i] })).filter(p=>p.y != null).slice(-14);
+  if(goal === 'maintain'){
+    predictedText = 'For "maintain," the goal is staying inside the band above, not hitting a date — a flat line here is the win.';
+  } else if(regressionPoints.length >= 4 && targetWeight){
+    const n = regressionPoints.length;
+    const sumX = regressionPoints.reduce((s,p)=>s+p.x,0);
+    const sumY = regressionPoints.reduce((s,p)=>s+p.y,0);
+    const sumXY = regressionPoints.reduce((s,p)=>s+p.x*p.y,0);
+    const sumXX = regressionPoints.reduce((s,p)=>s+p.x*p.x,0);
+    const denom = (n*sumXX - sumX*sumX);
+    const slope = denom !== 0 ? (n*sumXY - sumX*sumY) / denom : 0;
+    const lastPoint = regressionPoints[regressionPoints.length-1];
+    if(Math.abs(slope) < 0.005){
+      predictedText = `Your weight has been essentially flat over your last ${n} logged points, so there isn't a clear rate to project from yet. That's a normal stretch, not a sign anything's wrong — keep logging and a trend will emerge.`;
+    } else {
+      const movingTowardGoal = (slope < 0 && targetWeight < lastPoint.y) || (slope > 0 && targetWeight > lastPoint.y);
+      const daysToGoal = (targetWeight - lastPoint.y) / slope;
+      if(movingTowardGoal && daysToGoal > 0 && daysToGoal < 3650){
+        const lo = Math.round(daysToGoal * 0.75), hi = Math.round(daysToGoal * 1.35);
+        predictedText = `At your recent pace, you're on track to reach ${targetWeight} kg in roughly ${lo}–${hi} days. That's a rough estimate from your recent trend, not a guarantee — it will shift as you keep logging.`;
+      } else if(movingTowardGoal){
+        predictedText = `Your recent trend is heading toward ${targetWeight} kg, but at a pace too slow to estimate usefully yet — keep logging.`;
+      } else {
+        predictedText = `Your recent trend is moving away from ${targetWeight} kg rather than toward it. Worth a look at your last few days of food and activity logs.`;
+      }
+    }
+  }
+
+  const svg = buildTrajectorySVG({ days, actual, goalLine, band, targetWeight });
+
+  outEl.innerHTML = `
+    ${goalNote}
+    <div id="trajectoryChartWrap">${svg}</div>
+    <p class="outcome-note" style="margin-top:10px;">${predictedText}</p>
+  `;
+}
+
+function buildTrajectorySVG({ days, actual, goalLine, band, targetWeight }){
+  const w = 640, h = 220, padL = 42, padR = 72, padT = 16, padB = 26;
+  const n = days.length;
+  const allVals = actual.filter(v => v != null);
+  if(goalLine) allVals.push(...goalLine.filter(v => v != null));
+  if(band) allVals.push(band[0], band[1]);
+  if(targetWeight) allVals.push(targetWeight);
+  if(allVals.length === 0) return '<div class="note">Not enough data yet.</div>';
+
+  let minV = Math.min(...allVals), maxV = Math.max(...allVals);
+  if(minV === maxV){ minV -= 1; maxV += 1; }
+  const vPad = (maxV - minV) * 0.15 || 0.5;
+  minV -= vPad; maxV += vPad;
+
+  const xScale = i => padL + (n > 1 ? (i/(n-1)) * (w - padL - padR) : 0);
+  const yScale = v => h - padB - ((v - minV)/(maxV - minV)) * (h - padT - padB);
+
+  const pathFor = (arr) => {
+    let d = '', started = false;
+    arr.forEach((v,i)=>{
+      if(v == null){ started = false; return; }
+      d += (started ? 'L' : 'M') + xScale(i).toFixed(1) + ',' + yScale(v).toFixed(1) + ' ';
+      started = true;
+    });
+    return d.trim();
+  };
+
+  const actualPath = pathFor(actual);
+  const goalPath = goalLine ? pathFor(goalLine) : '';
+
+  const gridLines = [0, 0.5, 1].map(t=>{
+    const v = minV + (maxV-minV)*t;
+    const y = yScale(v);
+    return `<line x1="${padL}" y1="${y.toFixed(1)}" x2="${w-padR}" y2="${y.toFixed(1)}" stroke="var(--line-soft)" stroke-width="1"/>
+      <text x="${(padL-6).toFixed(1)}" y="${(y+4).toFixed(1)}" text-anchor="end" font-size="10" fill="var(--ink-faint)" font-family="IBM Plex Mono, monospace">${v.toFixed(1)}</text>`;
+  }).join('');
+
+  const bandRect = band
+    ? `<rect x="${padL}" y="${yScale(band[1]).toFixed(1)}" width="${(w-padL-padR).toFixed(1)}" height="${(yScale(band[0])-yScale(band[1])).toFixed(1)}" fill="var(--steel-wash)" opacity="0.7"/>`
+    : '';
+
+  const dots = actual.map((v,i)=> v==null ? '' :
+    `<circle cx="${xScale(i).toFixed(1)}" cy="${yScale(v).toFixed(1)}" r="2.5" fill="var(--teal)"/>`
+  ).join('');
+
+  let endLabels = '';
+  let lastIdx = -1;
+  for(let i=n-1; i>=0; i--){ if(actual[i] != null){ lastIdx = i; break; } }
+  if(lastIdx >= 0){
+    endLabels += `<text x="${(xScale(lastIdx)+6).toFixed(1)}" y="${(yScale(actual[lastIdx])+4).toFixed(1)}" font-size="11" fill="var(--teal-deep)" font-weight="600" font-family="IBM Plex Sans, sans-serif">Actual ${actual[lastIdx].toFixed(1)}</text>`;
+  }
+  if(goalLine){
+    let gIdx = -1;
+    for(let i=n-1; i>=0; i--){ if(goalLine[i] != null){ gIdx = i; break; } }
+    if(gIdx >= 0){
+      const collide = lastIdx >= 0 && Math.abs(yScale(goalLine[gIdx]) - yScale(actual[lastIdx])) < 12;
+      if(!collide){
+        endLabels += `<text x="${(xScale(gIdx)+6).toFixed(1)}" y="${(yScale(goalLine[gIdx])+4).toFixed(1)}" font-size="11" fill="var(--steel)" font-weight="600" font-family="IBM Plex Sans, sans-serif">Goal ${goalLine[gIdx].toFixed(1)}</text>`;
+      }
+    }
+  }
+
+  const legend = `<div style="display:flex; gap:16px; margin-top:8px; font-size:12px; color:var(--ink-soft); flex-wrap:wrap;">
+    <span><span style="display:inline-block; width:10px; height:10px; border-radius:50%; background:var(--teal); margin-right:5px; vertical-align:middle;"></span>Actual</span>
+    ${goalLine ? `<span><span style="display:inline-block; width:14px; height:2px; background:var(--steel); margin-right:5px; vertical-align:middle;"></span>Goal pace</span>` : ''}
+    ${band ? `<span><span style="display:inline-block; width:10px; height:10px; background:var(--steel-wash); margin-right:5px; vertical-align:middle; border:1px solid var(--line);"></span>Steady range</span>` : ''}
+  </div>`;
+
+  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" style="overflow:visible; display:block;">
+    ${bandRect}
+    ${gridLines}
+    ${goalPath ? `<path d="${goalPath}" fill="none" stroke="var(--steel)" stroke-width="2" stroke-dasharray="5,4"/>` : ''}
+    <path d="${actualPath}" fill="none" stroke="var(--teal)" stroke-width="2"/>
+    ${dots}
+    ${endLabels}
+  </svg>${legend}`;
 }
 
 // ---------- Food database (now loaded from Supabase) ----------
@@ -1510,7 +1855,7 @@ function toDateStr(d){
 }
 const TODAY_STR = toDateStr(new Date());
 
-const state = { currentDate: TODAY_STR, targets: {}, wearables: {} };
+const state = { currentDate: TODAY_STR, targets: {}, wearables: {}, weightLogs: [] };
 let entriesCache = [];
 
 function currentEntries(){ return entriesCache; }
