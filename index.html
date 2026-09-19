@@ -1990,11 +1990,17 @@ async function refreshDietLog(){
     console.error('Could not load diet log:', error.message);
     entriesCache = [];
   } else {
+    // mapFoodRow(row.foods) returns its own "id" (the food's id in the
+    // foods table) — that has to be spread in FIRST so the diet_entries
+    // row's own "id" below overwrites it. Doing it the other way around
+    // silently replaces the diary entry's real id with the food's id,
+    // which made every delete/edit target the wrong row (and match
+    // nothing, since food ids and diet_entries ids are different rows).
     entriesCache = data.map(row => ({
+      ...mapFoodRow(row.foods),
       id: row.id,
       servings: row.servings,
       meal: row.meal,
-      ...mapFoodRow(row.foods)
     }));
   }
   renderLog();
@@ -4183,7 +4189,10 @@ async function fetchEntriesRange(startStr, endStr){
   if(error){ console.error('Could not load trend data:', error.message); return {}; }
   const byDate = {};
   data.forEach(row=>{
-    const entry = { id: row.id, servings: row.servings, meal: row.meal, ...mapFoodRow(row.foods) };
+    // Same ordering fix as refreshDietLog() above: mapFoodRow's own "id"
+    // (the food's id) must be spread in before the real diet_entries id,
+    // not after, or it silently overwrites it.
+    const entry = { ...mapFoodRow(row.foods), id: row.id, servings: row.servings, meal: row.meal };
     (byDate[row.entry_date] = byDate[row.entry_date] || []).push(entry);
   });
   return byDate;
