@@ -7,6 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/pdf-lib@1/dist/pdf-lib.min.js"></script>
 <style>
   :root{
     --paper:#F1F4EC;
@@ -1053,7 +1054,7 @@
             <input type="file" id="fileInput" accept=".pdf,.jpg,.jpeg,.png,.webp" style="display:none;">
             <button class="btn ghost small" id="chooseFileBtn">Choose file</button>
           </div>
-          <div style="font-size:11.5px; color:var(--ink-faint); margin-top:10px;">PDF, JPG, PNG, or WEBP — up to about 4MB.</div>
+          <div style="font-size:11.5px; color:var(--ink-faint); margin-top:10px;">PDF, JPG, PNG, or WEBP. Large PDFs are split into smaller pieces automatically — images should stay under about 3MB.</div>
         </div>
         <div id="analyzeRow" style="display:none; margin-top:16px; text-align:right;">
           <button class="btn" id="analyzeBtn">Analyze report</button>
@@ -1061,6 +1062,7 @@
         <div id="reportStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:10px; min-height:16px;"></div>
 
         <div id="reportOutput" style="display:none; margin-top:24px;">
+          <div id="reportPartialWarning" class="disclaimer warn" style="display:none; margin-top:0; margin-bottom:14px;"></div>
           <div id="reportMeta" class="note" style="margin-top:0; display:none;"></div>
           <table class="report">
             <thead><tr><th>Marker</th><th>Reported value</th><th>Reference range (from your report)</th><th></th></tr></thead>
@@ -2862,59 +2864,178 @@ function fileToBase64(file){
   });
 }
 
+// ---------- Large-report splitting (client-side) ----------
+// Vercel's serverless functions have a hard 4.5MB limit on both the request
+// and the response body, and it can't be raised with configuration -- so a
+// report bigger than that can never reach /api/read-report in a single call,
+// no matter what the server does. When a PDF is too big, we split it into
+// smaller page groups right here in the browser (using the pdf-lib library
+// loaded in the page head), send each group to the SAME unchanged endpoint
+// as its own small request, and stitch the results back into one combined
+// result -- so everything downstream (saving, trends, CSV download) sees
+// exactly the same shape it always has, with no changes needed there.
+
+// Comfortably under Vercel's 4.5MB request-body ceiling once base64-encoded
+// (base64 inflates raw bytes by roughly 4/3), with headroom for JSON overhead.
+const SAFE_SINGLE_UPLOAD_BYTES = 3 * 1024 * 1024; // 3MB raw file (or chunk)
+
+function uint8ToBase64(bytes){
+  let binary = '';
+  const chunkSize = 8192; // avoid call-stack limits on String.fromCharCode for large arrays
+  for(let i = 0; i < bytes.length; i += chunkSize){
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+// Splits a large PDF File into a list of smaller PDFs (each a contiguous
+// page range), packed so each one stays under SAFE_SINGLE_UPLOAD_BYTES.
+// Returns null if the file is a single page (nothing left to split).
+async function splitPdfIntoChunks(file){
+  const arrayBuffer = await file.arrayBuffer();
+  let srcDoc;
+  try{
+    srcDoc = await PDFLib.PDFDocument.load(arrayBuffer);
+  } catch(e){
+    throw new Error("Couldn't open this PDF to split it — it may be encrypted or damaged. Try re-saving or re-exporting it and upload that copy instead.");
+  }
+  const totalPages = srcDoc.getPageCount();
+  if(totalPages <= 1) return null;
+
+  // Estimate each page's own saved size first (one quick save per page) so
+  // we can pack pages into groups in a single pass, rather than re-saving
+  // the whole growing chunk after every page added (much slower on long reports).
+  const pageSizes = [];
+  for(let i = 0; i < totalPages; i++){
+    const single = await PDFLib.PDFDocument.create();
+    const [copied] = await single.copyPages(srcDoc, [i]);
+    single.addPage(copied);
+    pageSizes.push((await single.save()).length);
+  }
+
+  const groups = [];
+  let current = [];
+  let currentSize = 0;
+  for(let i = 0; i < totalPages; i++){
+    const size = pageSizes[i];
+    if(current.length && currentSize + size > SAFE_SINGLE_UPLOAD_BYTES){
+      groups.push(current);
+      current = [];
+      currentSize = 0;
+    }
+    current.push(i);
+    currentSize += size;
+  }
+  if(current.length) groups.push(current);
+
+  const chunks = [];
+  for(const pageIndices of groups){
+    const chunkDoc = await PDFLib.PDFDocument.create();
+    const copiedPages = await chunkDoc.copyPages(srcDoc, pageIndices);
+    copiedPages.forEach(p => chunkDoc.addPage(p));
+    const bytes = await chunkDoc.save();
+    chunks.push({
+      base64: uint8ToBase64(bytes),
+      firstPage: pageIndices[0] + 1,
+      lastPage: pageIndices[pageIndices.length - 1] + 1,
+    });
+  }
+  return { chunks, totalPages };
+}
+
+async function analyzeOneChunk(fileBase64, mediaType){
+  const res = await fetch('/api/read-report', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ fileBase64, mediaType })
+  });
+  // A platform-level timeout returns a plain-text error page, not JSON —
+  // guard the parse so that doesn't itself throw an unhelpful error.
+  let data = null;
+  try { data = await res.json(); } catch(parseErr) { /* leave data null */ }
+  if(!res.ok){
+    if(data && data.rawPreview) console.error('Report raw response preview:', data.rawPreview);
+    if(res.status === 504 || !data) throw new Error('TIMEOUT');
+    throw new Error(data.error || `Request failed (status ${res.status})`);
+  }
+  return data;
+}
+
 document.getElementById('analyzeBtn').onclick = async ()=>{
   if(!selectedFile) return;
   const status = document.getElementById('reportStatus');
   const analyzeBtn = document.getElementById('analyzeBtn');
+  const mediaType = selectedFile.type || 'application/pdf';
+  const isPdf = mediaType === 'application/pdf';
 
-  if(selectedFile.size > 4.2 * 1024 * 1024){
-    status.textContent = 'That file is a bit large — please use one under about 4MB.';
+  if(!isPdf && selectedFile.size > SAFE_SINGLE_UPLOAD_BYTES){
+    status.textContent = 'That image is a bit large — please use one under about 3MB (a lower-resolution scan or photo usually fixes this).';
     status.style.color = 'var(--rust)';
     return;
   }
 
   analyzeBtn.disabled = true;
   status.style.color = 'var(--ink-faint)';
-  status.textContent = 'Reading your report…';
   document.getElementById('reportOutput').style.display = 'none';
 
   try{
-    const fileBase64 = await fileToBase64(selectedFile);
-    const mediaType = selectedFile.type || 'application/pdf';
-    const res = await fetch('/api/read-report', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ fileBase64, mediaType })
-    });
+    let merged;
 
-    // A platform-level timeout returns a plain-text error page, not JSON —
-    // guard the parse so that doesn't itself throw an unhelpful error.
-    let data = null;
-    try { data = await res.json(); } catch(parseErr) { /* leave data null */ }
-
-    if(!res.ok){
-      if(data && data.rawPreview) console.error('Report raw response preview:', data.rawPreview);
-      if(res.status === 504 || !data){
-        throw new Error('TIMEOUT');
+    if(isPdf && selectedFile.size > SAFE_SINGLE_UPLOAD_BYTES){
+      status.textContent = 'This report is large — splitting it into smaller pieces to read…';
+      const split = await splitPdfIntoChunks(selectedFile);
+      if(!split){
+        throw new Error('This file is a single page but still too large to process. Try re-scanning or re-saving it at a lower resolution or quality.');
       }
-      throw new Error(data.error || `Request failed (status ${res.status})`);
+      const { chunks } = split;
+
+      merged = { notAReport: false, reportDate: null, patientName: null, markers: [] };
+      const failedRanges = [];
+
+      for(let i = 0; i < chunks.length; i++){
+        const c = chunks[i];
+        const rangeLabel = c.firstPage === c.lastPage ? `page ${c.firstPage}` : `pages ${c.firstPage}–${c.lastPage}`;
+        status.textContent = `Reading ${rangeLabel} (part ${i+1} of ${chunks.length})…`;
+        try{
+          const data = await analyzeOneChunk(c.base64, 'application/pdf');
+          if(!data.notAReport){
+            merged.markers.push(...(data.markers || []));
+            if(!merged.patientName && data.patientName) merged.patientName = data.patientName;
+            if(!merged.reportDate && data.reportDate) merged.reportDate = data.reportDate;
+          }
+        } catch(chunkErr){
+          console.error(`Chunk failed (${rangeLabel}):`, chunkErr);
+          failedRanges.push(rangeLabel + (chunkErr.message === 'TIMEOUT' ? ' (took too long)' : ''));
+        }
+      }
+
+      if(merged.markers.length === 0 && failedRanges.length === 0){
+        merged.notAReport = true;
+      }
+      merged.partialFailureNote = failedRanges.length
+        ? `Couldn't read ${failedRanges.join(', ')} — the results below only cover the pages that were read successfully. Try analyzing just ${failedRanges.length===1?'that page':'those pages'} on its own.`
+        : null;
+    } else {
+      status.textContent = 'Reading your report…';
+      const fileBase64 = await fileToBase64(selectedFile);
+      merged = await analyzeOneChunk(fileBase64, mediaType);
     }
 
-    if(data.notAReport){
+    if(merged.notAReport){
       status.textContent = "That doesn't look like a lab or medical report — try a different file.";
       status.style.color = 'var(--rust)';
       analyzeBtn.disabled = false;
       return;
     }
 
-    lastAnalyzedReport = { ...data, fileName: selectedFile.name };
-    renderReportResults(data);
+    lastAnalyzedReport = { ...merged, fileName: selectedFile.name };
+    renderReportResults(merged);
     document.getElementById('saveReportStatus').textContent = '';
     status.textContent = '';
   } catch(e){
     console.error('Report analysis error:', e);
     if(e.message === 'TIMEOUT'){
-      status.textContent = "This report is too long to process in one go — it needs more time than this server currently allows. Try splitting it into smaller files (a few pages each) and uploading those instead.";
+      status.textContent = "This report is taking too long to process. Try again in a moment, or use a smaller file.";
     } else {
       status.textContent = "Couldn't read that report just now: " + e.message;
     }
@@ -2930,7 +3051,16 @@ function renderReportResults(data){
   const metaEl = document.getElementById('reportMeta');
   const bodyEl = document.getElementById('reportBody');
   const summaryEl = document.getElementById('reportSummaryNote');
+  const warnEl = document.getElementById('reportPartialWarning');
   const markers = data.markers || [];
+
+  if(data.partialFailureNote){
+    warnEl.style.display = 'block';
+    warnEl.innerHTML = `<strong>Some pages couldn't be read</strong>${data.partialFailureNote}`;
+  } else {
+    warnEl.style.display = 'none';
+    warnEl.innerHTML = '';
+  }
 
   const metaBits = [];
   if(data.patientName) metaBits.push('Patient (as printed): ' + data.patientName);
