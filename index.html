@@ -796,6 +796,10 @@
               <button class="btn" id="addFoodBtn">Add to log</button>
             </div>
             <div id="addFoodHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
+            <div id="requestFoodRow" style="display:none; margin-top:4px;">
+              <button class="btn ghost small" id="requestFoodBtn" type="button">Can't find it? Let us know</button>
+              <span id="requestFoodStatus" style="font-size:12.5px; color:var(--ink-faint); margin-left:8px;"></span>
+            </div>
           </div>
 
           <div class="card" style="margin-top:20px;">
@@ -2415,6 +2419,28 @@ if(!SpeechRecognition){
   };
 }
 
+// Lets someone tell us a food they searched for and couldn't find, so future
+// food-list updates can be prioritized by what people actually needed rather
+// than guessed at. Only ever writes the text they typed — no automatic
+// action follows from it, it's just a queue for us to review later.
+function offerFoodRequest(typed){
+  const reqRow = document.getElementById('requestFoodRow');
+  const reqStatus = document.getElementById('requestFoodStatus');
+  const reqBtn = document.getElementById('requestFoodBtn');
+  if(!typed){ reqRow.style.display = 'none'; return; }
+  reqRow.style.display = 'block';
+  reqStatus.textContent = '';
+  reqBtn.disabled = false;
+  reqBtn.onclick = async ()=>{
+    if(!currentUser) return;
+    reqBtn.disabled = true;
+    reqStatus.textContent = 'Sending…';
+    const { error } = await db.from('food_requests').insert({ user_id: currentUser.id, requested_name: typed });
+    if(error){ reqStatus.textContent = "Couldn't send: " + error.message; reqBtn.disabled = false; return; }
+    reqStatus.textContent = "Thanks — we'll consider adding it.";
+  };
+}
+
 document.getElementById('addFoodBtn').onclick = async ()=>{
   if(!currentUser) return;
   const hint = document.getElementById('addFoodHint');
@@ -2424,9 +2450,11 @@ document.getElementById('addFoodBtn').onclick = async ()=>{
     hint.textContent = typed
       ? `"${typed}" isn't in the food list yet — pick a suggestion as you type.`
       : 'Start typing a food name and pick one of the suggestions.';
+    offerFoodRequest(typed);
     return;
   }
   hint.textContent = '';
+  document.getElementById('requestFoodRow').style.display = 'none';
   const servings = +document.getElementById('servings').value || 1;
   const meal = getSel('mealGroup');
   const { error } = await db.from('diet_entries').insert({
@@ -2952,26 +2980,29 @@ function renderSavedReportsList(reports){
           <div class="smeta">${metaBits.join(' · ')} · saved ${savedOn}</div>
         </div>
         <div class="sactions">
-          <button class="btn ghost small toggle-btn">View / edit</button>
+          <button class="btn ghost small toggle-btn">View</button>
+          <button class="btn ghost small download-btn">Download CSV</button>
           <button class="btn ghost small delete-btn">Delete</button>
         </div>
       </div>
       <div class="sbody">
         <table class="report">
-          <thead><tr><th>Marker</th><th>Value</th><th>Unit</th><th>Reference range</th></tr></thead>
+          <thead><tr><th>Marker</th><th>Value</th><th>Unit</th><th>Reference range</th><th>Status</th></tr></thead>
           <tbody>
-            ${markers.map((m,i)=>`<tr>
+            ${markers.map(m=>{
+              const flagClass = (m.flag || 'unknown').toLowerCase();
+              const flagLabel = {low:'Below range', normal:'Within range', high:'Above range', unknown:'No range on report'}[flagClass] || 'No range on report';
+              return `<tr>
               <td>${m.name}</td>
-              <td><input type="text" class="edit-value" data-i="${i}" value="${(m.value ?? '').toString().replace(/"/g,'&quot;')}"></td>
-              <td><input type="text" class="edit-unit" data-i="${i}" value="${(m.unit ?? '').toString().replace(/"/g,'&quot;')}"></td>
-              <td><input type="text" class="edit-range" data-i="${i}" value="${(m.referenceRange ?? '').toString().replace(/"/g,'&quot;')}"></td>
-            </tr>`).join('')}
+              <td>${(m.value ?? '').toString()}</td>
+              <td>${(m.unit ?? '').toString()}</td>
+              <td>${(m.referenceRange ?? '').toString() || '<span style="color:var(--ink-faint);">Not stated on report</span>'}</td>
+              <td><span class="flag ${flagClass}">${flagLabel}</span></td>
+            </tr>`;
+            }).join('')}
           </tbody>
         </table>
-        <div style="text-align:right; margin-top:12px; display:flex; justify-content:flex-end; gap:8px;">
-          <button class="btn ghost small save-edit-btn">Save changes</button>
-        </div>
-        <div class="edit-status" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
+        <div class="note" style="margin-top:10px;">These values are read directly from your uploaded report and can't be edited here — that keeps this record matching what your lab actually printed. If a value looks wrong, it's worth checking the original report or re-uploading it.</div>
       </div>
     </div>`;
   }).join('');
@@ -2989,36 +3020,42 @@ function renderSavedReportsList(reports){
       });
     };
 
-    card.querySelector('.save-edit-btn').onclick = async ()=>{
-      const statusEl = card.querySelector('.edit-status');
+    card.querySelector('.download-btn').onclick = ()=>{
       const report = reports.find(r=>String(r.id)===String(id));
-      const markers = (report.markers || []).map((m,i)=>{
-        const value = card.querySelector(`.edit-value[data-i="${i}"]`).value;
-        const unit = card.querySelector(`.edit-unit[data-i="${i}"]`).value || null;
-        const referenceRange = card.querySelector(`.edit-range[data-i="${i}"]`).value || null;
-        // Re-derive the flag from the edited value/range the same way the
-        // server does, so an edit can't leave a stale Low/High label behind.
-        let flag = 'Unknown';
-        if(referenceRange){
-          const nums = referenceRange.match(/-?\d+(\.\d+)?/g);
-          const numeric = parseFloat(value);
-          if(nums && nums.length >= 2 && !isNaN(numeric)){
-            const lo = parseFloat(nums[0]), hi = parseFloat(nums[1]);
-            flag = numeric < lo ? 'Low' : numeric > hi ? 'High' : 'Normal';
-          } else {
-            flag = m.flag || 'Unknown';
-          }
-        }
-        return { ...m, value, unit, referenceRange, flag };
-      });
-      statusEl.textContent = 'Saving…';
-      const { error } = await db.from('medical_reports').update({ markers, updated_at: new Date().toISOString() }).eq('id', id);
-      if(error){ statusEl.style.color='var(--rust)'; statusEl.textContent = "Couldn't save: " + error.message; return; }
-      statusEl.style.color = 'var(--teal-deep)';
-      statusEl.textContent = 'Saved.';
-      await loadSavedReports();
+      downloadReportCSV(report);
     };
   });
+}
+
+// Builds a plain CSV of one saved report's extracted values — client-side
+// only, no server round trip — so someone can keep or share a copy without
+// being able to alter the values that came off their actual lab report.
+function downloadReportCSV(report){
+  const csvEscape = v => `"${String(v ?? '').replace(/"/g,'""')}"`;
+  const lines = [];
+  lines.push(['Report file', 'Patient (as printed)', 'Report date (as printed)', 'Saved on'].map(csvEscape).join(','));
+  lines.push([
+    report.file_name || '',
+    report.patient_name || '',
+    report.report_date || '',
+    new Date(report.created_at).toLocaleDateString()
+  ].map(csvEscape).join(','));
+  lines.push('');
+  lines.push(['Marker', 'Value', 'Unit', 'Reference range', 'Status'].map(csvEscape).join(','));
+  (report.markers || []).forEach(m=>{
+    const flagLabel = {low:'Below range', normal:'Within range', high:'Above range', unknown:'No range on report'}[(m.flag || 'unknown').toLowerCase()] || 'No range on report';
+    lines.push([m.name, m.value, m.unit, m.referenceRange, flagLabel].map(csvEscape).join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const safeName = (report.file_name || 'medical-report').replace(/\.[^.]+$/, '').replace(/[^a-z0-9\-_]+/gi, '_');
+  a.href = url;
+  a.download = `${safeName}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
 }
 
 // ---------- Medical trends: grouping, matching, and small-multiple charts ----------
@@ -3535,12 +3572,17 @@ function renderDietitianNotes(trendData){
   const foodNotes = [];
   const topicNotes = [];
 
+  // Every note below is only ever drawn from each marker's single MOST RECENT
+  // saved report — trendData is rebuilt fresh from the database every time
+  // this renders, so a new report changes this automatically. The date is
+  // shown on each line so it's obvious at a glance which report a note is
+  // based on, rather than it looking like a fixed, unchanging list.
   Object.entries(MARKER_NUTRIENT_LINKS).forEach(([markerKey, link])=>{
     const entry = trendData[markerKey];
     if(!entry) return;
     const latest = entry.points[entry.points.length - 1];
     if(!latest || latest.flag !== link.direction) return;
-    foodNotes.push({ markerLabel: entry.label, direction: link.direction, nutrients: link.nutrients });
+    foodNotes.push({ markerLabel: entry.label, direction: link.direction, nutrients: link.nutrients, dateLabel: latest.dateLabel });
   });
 
   Object.entries(MARKER_DIET_TOPICS).forEach(([markerKey, link])=>{
@@ -3548,7 +3590,7 @@ function renderDietitianNotes(trendData){
     if(!entry) return;
     const latest = entry.points[entry.points.length - 1];
     if(!latest || latest.flag !== link.direction) return;
-    topicNotes.push({ markerLabel: entry.label, direction: link.direction, topic: link.topic });
+    topicNotes.push({ markerLabel: entry.label, direction: link.direction, topic: link.topic, dateLabel: latest.dateLabel });
   });
 
   if(foodNotes.length === 0 && topicNotes.length === 0){ card.style.display = 'none'; return; }
@@ -3562,13 +3604,13 @@ function renderDietitianNotes(trendData){
         const direction = n.direction === 'High' ? 'above' : 'below';
         if(n.direction === 'High'){
           return `<div class="dnote-item">
-            <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range)</span> — ${nutrientLabels.join(' / ')}</div>
+            <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range, as of ${n.dateLabel})</span> — ${nutrientLabels.join(' / ')}</div>
           </div>`;
         }
         const foodSet = [];
         n.nutrients.forEach(k=> (NUTRIENT_FOOD_SUGGESTIONS[k] || []).forEach(f=>{ if(!foodSet.includes(f)) foodSet.push(f); }));
         return `<div class="dnote-item">
-          <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range)</span> — ${nutrientLabels.join(' / ')}</div>
+          <div class="dnote-item-title">${n.markerLabel} <span class="dnote-range">(${direction} range, as of ${n.dateLabel})</span> — ${nutrientLabels.join(' / ')}</div>
           <div class="dfoods">${foodSet.join(' · ')}</div>
           <button class="btn ghost small recipe-btn" data-foods='${JSON.stringify(foodSet).replace(/'/g,'&#39;')}'>Get recipe ideas</button>
           <div class="recipe-panel"></div>
@@ -3582,7 +3624,7 @@ function renderDietitianNotes(trendData){
       <ul class="dtopic-list">
         ${topicNotes.map(n=>{
           const direction = n.direction === 'High' ? 'above' : 'below';
-          return `<li><strong>${n.markerLabel}</strong> <span class="dnote-range">(${direction} range)</span> — ${n.topic}</li>`;
+          return `<li><strong>${n.markerLabel}</strong> <span class="dnote-range">(${direction} range, as of ${n.dateLabel})</span> — ${n.topic}</li>`;
         }).join('')}
       </ul>
     </div>`;
@@ -4297,6 +4339,7 @@ logDateInput.value = TODAY_STR;
 logDateInput.onchange = async ()=>{
   state.currentDate = logDateInput.value || TODAY_STR;
   document.getElementById('addFoodHint').textContent = '';
+  document.getElementById('requestFoodRow').style.display = 'none';
   await refreshDietLog();
 };
 document.getElementById('todayBtn').onclick = async ()=>{
