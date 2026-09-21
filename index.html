@@ -636,6 +636,17 @@
               </select>
             </div>
           </div>
+
+          <div class="field" id="lifeStageField">
+            <label>Life stage — affects your targets</label>
+            <div class="segmented" id="lifeStageGroup">
+              <button data-val="none" class="sel">None of these</button>
+              <button data-val="pregnant">Pregnant</button>
+              <button data-val="lactating">Breastfeeding</button>
+            </div>
+            <div class="note" id="lifeStageNote"></div>
+          </div>
+
           <div class="field-row">
             <div class="field">
               <label for="height">Height (cm)</label>
@@ -1369,7 +1380,7 @@ function wireSegment(id){
     };
   });
 }
-['frameGroup','activityGroup','goalGroup','mealGroup'].forEach(wireSegment);
+['frameGroup','activityGroup','goalGroup','mealGroup','lifeStageGroup'].forEach(wireSegment);
 
 function setSegmented(groupId, val){
   const group = document.getElementById(groupId);
@@ -1387,6 +1398,62 @@ function setSegmented(groupId, val){
 
 function getSel(id){ return document.querySelector('#'+id+' button.sel').dataset.val; }
 
+// ---------- Life-stage-aware nutrient targets ----------
+// Sourced from the NASEM/NIH Dietary Reference Intake (DRI) tables — the same standard
+// reference the flat adult RDAs before this were already drawn from — broken out by sex,
+// age bracket, and (for women) pregnancy/breastfeeding. Sodium isn't included here: the
+// 2,300mg/day "keep under" figure applies uniformly from age 14 up, pregnant or not.
+function ageBracket(age){
+  if(age <= 13) return '9-13';
+  if(age <= 18) return '14-18';
+  if(age <= 30) return '19-30';
+  if(age <= 50) return '31-50';
+  if(age <= 70) return '51-70';
+  return '70+';
+}
+
+const DRI_TABLE = {
+  female: {
+    none: {
+      '9-13':  {iron:8,  calcium:1300, vitD:5,  vitB12:1.8, vitC:45, vitA:600, vitE:11, vitK:60, folate:300, vitB6:1.0, magnesium:240, zinc:8, potassium:2300, selenium:40},
+      '14-18': {iron:15, calcium:1300, vitD:5,  vitB12:2.4, vitC:65, vitA:700, vitE:15, vitK:75, folate:400, vitB6:1.2, magnesium:360, zinc:9, potassium:2300, selenium:55},
+      '19-30': {iron:18, calcium:1000, vitD:5,  vitB12:2.4, vitC:75, vitA:700, vitE:15, vitK:90, folate:400, vitB6:1.3, magnesium:310, zinc:8, potassium:2600, selenium:55},
+      '31-50': {iron:18, calcium:1000, vitD:5,  vitB12:2.4, vitC:75, vitA:700, vitE:15, vitK:90, folate:400, vitB6:1.3, magnesium:320, zinc:8, potassium:2600, selenium:55},
+      '51-70': {iron:8,  calcium:1200, vitD:10, vitB12:2.4, vitC:75, vitA:700, vitE:15, vitK:90, folate:400, vitB6:1.5, magnesium:320, zinc:8, potassium:2600, selenium:55},
+      '70+':   {iron:8,  calcium:1200, vitD:15, vitB12:2.4, vitC:75, vitA:700, vitE:15, vitK:90, folate:400, vitB6:1.5, magnesium:320, zinc:8, potassium:2600, selenium:55},
+    },
+    // Pregnancy DRIs are published for ≤18 / 19-30 / 31-50; pregnancy past 50 is vanishingly
+    // rare and NASEM doesn't publish a bracket for it, so 51+ falls back to the 31-50 figures
+    // below rather than silently reusing the (much lower) non-pregnant values.
+    pregnant: {
+      '9-13':  {iron:27, calcium:1300, vitD:5, vitB12:2.6, vitC:80, vitA:750, vitE:15, vitK:75, folate:600, vitB6:1.9, magnesium:400, zinc:12, potassium:2600, selenium:60},
+      '14-18': {iron:27, calcium:1300, vitD:5, vitB12:2.6, vitC:80, vitA:750, vitE:15, vitK:75, folate:600, vitB6:1.9, magnesium:400, zinc:12, potassium:2600, selenium:60},
+      '19-30': {iron:27, calcium:1000, vitD:5, vitB12:2.6, vitC:85, vitA:770, vitE:15, vitK:90, folate:600, vitB6:1.9, magnesium:350, zinc:11, potassium:2900, selenium:60},
+      '31-50': {iron:27, calcium:1000, vitD:5, vitB12:2.6, vitC:85, vitA:770, vitE:15, vitK:90, folate:600, vitB6:1.9, magnesium:360, zinc:11, potassium:2900, selenium:60},
+      '51-70': {iron:27, calcium:1000, vitD:5, vitB12:2.6, vitC:85, vitA:770, vitE:15, vitK:90, folate:600, vitB6:1.9, magnesium:360, zinc:11, potassium:2900, selenium:60},
+      '70+':   {iron:27, calcium:1000, vitD:5, vitB12:2.6, vitC:85, vitA:770, vitE:15, vitK:90, folate:600, vitB6:1.9, magnesium:360, zinc:11, potassium:2900, selenium:60},
+    },
+    lactating: {
+      '9-13':  {iron:10, calcium:1300, vitD:5, vitB12:2.8, vitC:115, vitA:1200, vitE:19, vitK:75, folate:500, vitB6:2.0, magnesium:360, zinc:13, potassium:2500, selenium:70},
+      '14-18': {iron:10, calcium:1300, vitD:5, vitB12:2.8, vitC:115, vitA:1200, vitE:19, vitK:75, folate:500, vitB6:2.0, magnesium:360, zinc:13, potassium:2500, selenium:70},
+      '19-30': {iron:9,  calcium:1000, vitD:5, vitB12:2.8, vitC:120, vitA:1300, vitE:19, vitK:90, folate:500, vitB6:2.0, magnesium:310, zinc:12, potassium:2800, selenium:70},
+      '31-50': {iron:9,  calcium:1000, vitD:5, vitB12:2.8, vitC:120, vitA:1300, vitE:19, vitK:90, folate:500, vitB6:2.0, magnesium:320, zinc:12, potassium:2800, selenium:70},
+      '51-70': {iron:9,  calcium:1000, vitD:5, vitB12:2.8, vitC:120, vitA:1300, vitE:19, vitK:90, folate:500, vitB6:2.0, magnesium:320, zinc:12, potassium:2800, selenium:70},
+      '70+':   {iron:9,  calcium:1000, vitD:5, vitB12:2.8, vitC:120, vitA:1300, vitE:19, vitK:90, folate:500, vitB6:2.0, magnesium:320, zinc:12, potassium:2800, selenium:70},
+    }
+  },
+  male: {
+    none: {
+      '9-13':  {iron:8,  calcium:1300, vitD:5,  vitB12:1.8, vitC:45, vitA:600, vitE:11, vitK:60,  folate:300, vitB6:1.0, magnesium:240, zinc:8,  potassium:2500, selenium:40},
+      '14-18': {iron:11, calcium:1300, vitD:5,  vitB12:2.4, vitC:75, vitA:900, vitE:15, vitK:75,  folate:400, vitB6:1.3, magnesium:410, zinc:11, potassium:3000, selenium:55},
+      '19-30': {iron:8,  calcium:1000, vitD:5,  vitB12:2.4, vitC:90, vitA:900, vitE:15, vitK:120, folate:400, vitB6:1.3, magnesium:400, zinc:11, potassium:3400, selenium:55},
+      '31-50': {iron:8,  calcium:1000, vitD:5,  vitB12:2.4, vitC:90, vitA:900, vitE:15, vitK:120, folate:400, vitB6:1.3, magnesium:420, zinc:11, potassium:3400, selenium:55},
+      '51-70': {iron:8,  calcium:1200, vitD:10, vitB12:2.4, vitC:90, vitA:900, vitE:15, vitK:120, folate:400, vitB6:1.7, magnesium:420, zinc:11, potassium:3400, selenium:55},
+      '70+':   {iron:8,  calcium:1200, vitD:15, vitB12:2.4, vitC:90, vitA:900, vitE:15, vitK:120, folate:400, vitB6:1.7, magnesium:420, zinc:11, potassium:3400, selenium:55},
+    }
+  }
+};
+
 // ---------- Profile calc ----------
 let profileSaveTimer = null;
 function recalc(){
@@ -1397,13 +1464,24 @@ function recalc(){
   const activity = +getSel('activityGroup');
   const goal = getSel('goalGroup');
   const frame = getSel('frameGroup');
+  const lifeStage = sex === 'female' ? getSel('lifeStageGroup') : 'none';
+
+  document.getElementById('lifeStageField').style.display = sex === 'female' ? '' : 'none';
 
   const bmr = sex === 'male'
     ? 10*weight + 6.25*height - 5*age + 5
     : 10*weight + 6.25*height - 5*age - 161;
   const activityCals = bmr * activity;
   const goalAdj = {lose:-500, maintain:0, gain:300, manage:0}[goal];
-  const tdee = Math.round(activityCals + goalAdj);
+  let tdee = Math.round(activityCals + goalAdj);
+
+  // Pregnancy and breastfeeding add a further, well-established energy need on top of
+  // everything above (this is the added-energy figure for the 2nd/3rd trimester and for
+  // breastfeeding respectively — the 1st trimester isn't meaningfully higher than before
+  // pregnancy, so this is a reasonable single figure to use throughout).
+  let lifeStageEnergyNote = '';
+  if(lifeStage === 'pregnant'){ tdee += 340; lifeStageEnergyNote = ' (includes +340 kcal/day for pregnancy)'; }
+  if(lifeStage === 'lactating'){ tdee += 450; lifeStageEnergyNote = ' (includes +450 kcal/day for breastfeeding)'; }
 
   document.getElementById('bmrOut').textContent = Math.round(bmr) + ' kcal';
   document.getElementById('actOut').textContent = '×' + activity;
@@ -1411,25 +1489,26 @@ function recalc(){
   document.getElementById('tdeeOut').textContent = tdee.toLocaleString();
 
   const proteinFactor = {lose:1.8, maintain:1.2, gain:1.8, manage:1.1}[goal];
-  const proteinG = Math.round(weight * proteinFactor);
+  let proteinG = Math.round(weight * proteinFactor);
+  // Pregnancy and breastfeeding raise protein needs by roughly 25g/day above the general,
+  // goal-based estimate above — added on top rather than replacing it, since both needs
+  // (activity/goal-driven and life-stage-driven) are real at the same time.
+  if(lifeStage === 'pregnant' || lifeStage === 'lactating') proteinG += 25;
+
   const fatG = Math.round((tdee*0.25)/9);
   const carbG = Math.round((tdee - proteinG*4 - fatG*9)/4);
   const fiberG = Math.max(25, Math.round(tdee/1000*14));
 
-  const ironRDA = sex==='female' ? 18 : 8;
-  const vitCRDA = sex==='female' ? 75 : 90;
-  const vitARDA = sex==='female' ? 700 : 900;
-  const vitKRDA = sex==='female' ? 90 : 120;
-  const magnesiumRDA = sex==='female' ? 310 : 400;
-  const zincRDA = sex==='female' ? 8 : 11;
-  const potassiumRDA = sex==='female' ? 2600 : 3400;
+  const bracket = ageBracket(age);
+  const stageTable = (DRI_TABLE[sex] && (DRI_TABLE[sex][lifeStage] || DRI_TABLE[sex].none)) || DRI_TABLE.male.none;
+  const dri = stageTable[bracket] || stageTable['19-30'];
 
   state.targets = {
     kcal: tdee, protein: proteinG, carbs: carbG, fat: fatG, fiber: fiberG,
-    iron: ironRDA, calcium: 1000, vitD: 15, vitB12: 2.4, vitC: vitCRDA,
-    vitA: vitARDA, vitE: 15, vitK: vitKRDA, folate: 400, vitB6: 1.3,
-    magnesium: magnesiumRDA, zinc: zincRDA, potassium: potassiumRDA,
-    sodium: 2300, selenium: 55
+    iron: dri.iron, calcium: dri.calcium, vitD: dri.vitD, vitB12: dri.vitB12, vitC: dri.vitC,
+    vitA: dri.vitA, vitE: dri.vitE, vitK: dri.vitK, folate: dri.folate, vitB6: dri.vitB6,
+    magnesium: dri.magnesium, zinc: dri.zinc, potassium: dri.potassium,
+    sodium: 2300, selenium: dri.selenium
   };
 
   const frameNote = {
@@ -1438,6 +1517,13 @@ function recalc(){
     large:'Larger frame — standard targets apply; if you strength-train heavily, consider the upper end of the protein range.'
   };
   document.getElementById('bodyTypeNote').textContent = frameNote[frame];
+
+  const lifeStageMsg = {
+    pregnant: `Targets reflect pregnancy${lifeStageEnergyNote} — iron, folate, calcium, protein and several other nutrients are set higher than the standard adult targets.`,
+    lactating: `Targets reflect breastfeeding${lifeStageEnergyNote} — several nutrient targets (and calories) are set higher than the standard adult targets to support milk production.`,
+    none: ''
+  };
+  document.getElementById('lifeStageNote').textContent = lifeStageMsg[lifeStage] || '';
 
   renderTrajectory(weight, goalAdj, goal);
   renderGaps();
@@ -1462,6 +1548,7 @@ async function saveProfile(){
     frame: getSel('frameGroup'),
     activity_level: +getSel('activityGroup'),
     goal: getSel('goalGroup'),
+    life_stage: document.getElementById('sex').value === 'female' ? getSel('lifeStageGroup') : 'none',
     target_weight_kg: +document.getElementById('targetWeight').value || null,
     goal_weeks: +document.getElementById('goalWeeks').value || null,
     updated_at: new Date().toISOString()
@@ -1484,6 +1571,7 @@ async function loadProfile(){
     if(data.frame) setSegmented('frameGroup', data.frame);
     if(data.activity_level != null) setSegmented('activityGroup', String(data.activity_level));
     if(data.goal) setSegmented('goalGroup', data.goal);
+    if(data.life_stage) setSegmented('lifeStageGroup', data.life_stage);
     if(data.target_weight_kg != null) document.getElementById('targetWeight').value = data.target_weight_kg;
     if(data.goal_weeks != null) document.getElementById('goalWeeks').value = data.goal_weeks;
   }
