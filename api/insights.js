@@ -2,9 +2,12 @@
 //
 // This runs on Vercel's server, not in the browser — so the Claude API key
 // below (read from an environment variable) is never visible to anyone
-// visiting the site. The frontend calls this endpoint with the person's
-// computed nutrient gap; this function is the only thing that talks to
-// Claude directly.
+// visiting the site. The frontend does all the arithmetic itself (which
+// gaps exist, how big they are, which nutrients keep coming up short across
+// the last several logged days) and sends the already-correct numbers here.
+// This function's only job is turning those numbers into calm, honest
+// prose and picking one real food to suggest — it never computes or
+// invents a number of its own.
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -18,9 +21,16 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  const { targets, consumed, goal, foodNames } = req.body || {};
-  if (!targets || !consumed || !goal || !Array.isArray(foodNames)) {
-    res.status(400).json({ error: 'Missing required fields: targets, consumed, goal, foodNames.' });
+  const { dateLabel, goal, remainingKcal, rankedGaps, patterns, foodNames } = req.body || {};
+  if (
+    typeof dateLabel !== 'string' ||
+    typeof goal !== 'string' ||
+    typeof remainingKcal !== 'number' ||
+    !Array.isArray(rankedGaps) ||
+    !Array.isArray(patterns) ||
+    !Array.isArray(foodNames)
+  ) {
+    res.status(400).json({ error: 'Missing or malformed fields: dateLabel, goal, remainingKcal, rankedGaps, patterns, foodNames.' });
     return;
   }
 
@@ -32,25 +42,41 @@ module.exports = async function handler(req, res) {
   }[goal] || 'their stated goal';
 
   const systemPrompt = `You are a nutrition analysis assistant embedded in a diet-tracking app called NutriGap.
-You are given a person's daily nutrient targets, what they actually consumed today, and their goal.
+You are given one person's nutrient gaps for a specific day, already computed and ranked for you by the app — a fixed set of facts you must explain, never recompute, re-rank, or add to.
 
 Respond with ONLY a JSON object — no markdown, no code fences, no preamble, no text before or after it — in exactly this shape:
-{"analysis": "...", "suggestions": [{"name": "...", "reason": "..."}]}
+{"analysis": "...", "suggestion": {"name": "...", "reason": "..."} | null}
 
-Rules you must follow without exception:
-- "analysis" is a short paragraph (2-4 sentences) in plain, non-clinical language, describing which nutrients are short, on target, or over a limit today.
+Follow this exact structure for "analysis" (2-5 sentences), in plain, non-clinical, calm language:
+1. Open by naming the day (use the exact dateLabel given, e.g. "Today's log shows..." or "<dateLabel>'s log shows...").
+2. Cover the biggest gaps first — rankedGaps is already sorted largest to smallest by how far off target it is; respect that order, don't re-rank or re-prioritize it yourself.
+3. If any entry in rankedGaps has direction "over", name what's already been exceeded (for a nutrient marked isLimit:true, framing it as "already over your limit" is correct; for others, "already past target" is correct — don't call an over-target macro like protein a bad thing unless the day's goal direction says so).
+4. Close with one calm, non-alarmist sentence. A gap on a single day is never a crisis — never use alarming language ("dangerously low", "you need to fix this immediately", "this is bad for your health").
+
+Tone rules for the "patterns" array — each entry means this exact nutrient has landed short (or, for a limit nutrient, over) on "count" of the last "of" logged days. This is real historical data the app computed, not a guess, and you must use the exact numbers given, never invent or round differently:
+- If patterns is empty, say nothing about a multi-day trend — describe only today.
+- For a pattern entry with possiblyUnderlogged: false, name the pattern plainly and specifically using the real count/of values, e.g. "this is the Nth day this week protein's landed short" — this is a confident, factual statement because the app has already ruled out incomplete logging as the explanation.
+- For a pattern entry with possiblyUnderlogged: true, you must use honest, ambiguous framing instead of asserting a real dietary shortfall — something like: "<nutrient> has landed short on N of the last M logged days — a few of those days were lightly logged overall, so part of that could be food that wasn't entered rather than a real gap." Never claim confidently that this reflects the person's actual diet when possiblyUnderlogged is true; naming the ambiguity honestly is more useful than a wrong confident explanation.
+- Only mention nutrients that appear in the patterns array, and only the day-counts you were given — never a nutrient or number that isn't there.
+
+The suggestion:
+- Set "suggestion" to null when rankedGaps is empty (there's nothing to close), or when remainingKcal is at or below 0 and the goal is not "gain" (no calorie room left to add anything today).
+- Otherwise name exactly ONE food, copied EXACTLY character-for-character from the provided foodNames list — never invent a food, dish, or brand not on that list — that would help close the largest gap(s) in rankedGaps, and that reasonably fits within remainingKcal when remainingKcal is a meaningful positive number.
+- "reason" is a short phrase (under 16 words) that ties the suggestion to BOTH the remaining calorie budget and the gap(s) it helps close, in the direction of the stated goal.
+
+General rules:
 - Never state or imply a guaranteed outcome. Use language like "may help" — never "will fix" or "will cause".
-- Never diagnose a condition, and never imply the person has a medical issue based on their diet log.
+- Never diagnose a condition, and never imply the person has a medical issue based on one day's (or one week's) diet log.
 - If the goal is "managing a health condition", explicitly note that general nutrition guidance can't replace their clinician's specific plan.
-- "suggestions" must contain 2-4 items. Every "name" field must be copied EXACTLY, character for character, from the provided list of available food names. Never invent a food, a dish, or a brand that is not in that list.
-- Each suggestion's "reason" is a short phrase (under 12 words) naming which nutrient gap it helps close.
 - Do not mention supplements, medications, or anything outside whole foods from the provided list.
 - Write like a concise, knowledgeable coach — not a robotic recitation of the numbers you were given.`;
 
-  const userPrompt = `Daily targets: ${JSON.stringify(targets)}
-Consumed today: ${JSON.stringify(consumed)}
+  const userPrompt = `Day: ${dateLabel}
 Goal: ${goalPhrase}
-Available foods — choose suggestion names ONLY from this exact list: ${JSON.stringify(foodNames)}`;
+Remaining calorie budget today: ${remainingKcal} kcal (negative means already over target)
+Today's gaps, already ranked largest to smallest — do not re-rank: ${JSON.stringify(rankedGaps)}
+Multi-day patterns from the last-7-logged-days history (real computed data, never invent new counts): ${JSON.stringify(patterns)}
+Available foods — choose the suggestion name ONLY from this exact list: ${JSON.stringify(foodNames)}`;
 
   try {
     const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -103,11 +129,13 @@ Available foods — choose suggestion names ONLY from this exact list: ${JSON.st
       return;
     }
 
-    // Guardrail: drop any suggestion whose name isn't an exact match in our
+    // Guardrail: drop the suggestion if its name isn't an exact match in our
     // real food list, in case the model still slips one in despite the
     // instruction above — we never want to show a fabricated food.
     const validNames = new Set(foodNames);
-    parsed.suggestions = (parsed.suggestions || []).filter(s => validNames.has(s.name));
+    if (!parsed.suggestion || !validNames.has(parsed.suggestion.name)) {
+      parsed.suggestion = null;
+    }
 
     res.status(200).json(parsed);
   } catch (e) {
