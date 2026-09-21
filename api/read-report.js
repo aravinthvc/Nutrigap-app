@@ -5,6 +5,18 @@
 // the highest-sensitivity endpoint in the app, so the system prompt is
 // deliberately narrow: extraction only, no diagnosis, no inferred reference
 // ranges, no medical interpretation of any kind.
+//
+// This endpoint itself is unchanged in shape — it still reads exactly one
+// file per call. Large PDFs are now split into smaller page-range pieces in
+// the BROWSER before they ever get here (see splitPdfIntoChunks in the
+// frontend), because Vercel's 4.5MB request-body limit can't be raised with
+// configuration — a request over that size is rejected by the platform
+// before this code even runs. The size guard below is just a defense-in-depth
+// safety net for anything that slips through (e.g. a single oversized image,
+// which can't be split), with the number corrected to actually be reachable
+// (see note below — the old number was set high enough that Vercel's own
+// platform limit would always reject the request first, silently, so this
+// friendlier message could never actually show).
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -30,11 +42,15 @@ module.exports = async function handler(req, res) {
     return;
   }
 
-  // Rough size guard — base64 is ~33% larger than the original file, and
-  // Vercel's default request body limit is a few MB, so we fail clearly
-  // rather than let a huge upload hang or get silently rejected.
-  if (fileBase64.length > 6_000_000) {
-    res.status(413).json({ error: 'File is too large. Please upload a file under about 4MB.' });
+  // Vercel's hard limit is 4.5MB for the WHOLE request body, and base64
+  // inflates raw bytes by roughly 4/3 — so a base64 string anywhere near
+  // 6,000,000 characters (the old threshold here) is already well past what
+  // Vercel accepts; a request that large would be rejected by the platform
+  // itself, before this code runs at all, with a generic error instead of
+  // this friendly one. 4,400,000 characters (~3.3MB of original file) is
+  // the largest value that can actually still reach this check.
+  if (fileBase64.length > 4_400_000) {
+    res.status(413).json({ error: 'File is too large. Please upload a file under about 3MB, or a PDF (large PDFs are split automatically).' });
     return;
   }
 
@@ -48,7 +64,8 @@ Rules you must follow without exception:
 - Set "flag" to "Low", "Normal", or "High" ONLY by comparing the printed value against the printed reference range for that same marker. If no reference range is printed, "flag" MUST be "Unknown" — do not use outside knowledge to guess what's normal.
 - Do not diagnose any condition. Do not explain what a marker means medically. Do not speculate on causes. Do not recommend treatment, supplements, or lifestyle changes.
 - Do not comment on the person's overall health status or how "concerning" any result is.
-- If the document does not appear to be a medical or lab report, set "notAReport" to true and return an empty "markers" array.
+- This document may be only PART of a larger report (one page or a small group of pages from it) — if it looks like a fragment with no visible header, that's expected. Extract whatever markers ARE present on the page(s) you were given; don't set "notAReport" just because there's no title or patient info on this particular piece.
+- If the document does not appear to be any kind of medical or lab report at all (e.g. it's a photo of something unrelated), set "notAReport" to true and return an empty "markers" array.
 - If you can find a report date printed on the document, include it as "reportDate" (as printed); otherwise null.
 - If you can find the patient's name printed on the document, include it as "patientName" (as printed); otherwise null. This lets one account keep reports for multiple family members straight.
 
