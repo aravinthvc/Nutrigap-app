@@ -796,9 +796,13 @@
               <button class="btn" id="addFoodBtn">Add to log</button>
             </div>
             <div id="addFoodHint" style="font-size:12.5px; color:var(--rust); min-height:16px; margin-top:2px;"></div>
-            <div id="requestFoodRow" style="display:none; margin-top:4px;">
-              <button class="btn ghost small" id="requestFoodBtn" type="button">Can't find it? Let us know</button>
+            <div id="requestFoodRow" style="margin-top:4px;">
+              <button class="btn ghost small" id="requestFoodBtn" type="button">Can't find a food? Let us know</button>
               <span id="requestFoodStatus" style="font-size:12.5px; color:var(--ink-faint); margin-left:8px;"></span>
+              <div id="requestFoodForm" style="display:none; margin-top:8px; gap:8px; align-items:center;">
+                <input type="text" id="requestFoodInput" placeholder="What food is missing?" style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px;">
+                <button class="btn small" id="requestFoodSendBtn" type="button">Send</button>
+              </div>
             </div>
           </div>
 
@@ -824,6 +828,7 @@
               <div style="text-align:right; margin-top:10px;">
                 <button class="btn" id="confirmParseBtn">Add checked items to log</button>
               </div>
+              <div id="parseConfirmStatus" style="font-size:12.5px; text-align:right; margin-top:6px; min-height:16px;"></div>
             </div>
           </div>
 
@@ -2180,21 +2185,40 @@ function coreWords(phraseLower){
 // accepts a very close spelling match (short edit distance relative to
 // word length) — close enough to catch a typo or unusual plural, not
 // close enough to substitute in an unrelated food.
+//
+// Coverage rule (important): a match is only accepted if MOST of what the
+// person typed is accounted for within a single keyword phrase — never
+// just any one word, however close. Without this, a phrase like "channa
+// masala" could match "Cauliflower, cooked" purely because that food's
+// "gobi masala" keyword happens to share the generic word "masala" — even
+// though "channa" itself matches nothing there. Short phrases (1-2 words)
+// require every word to match; longer phrases allow one word to miss, so
+// an extra descriptive word ("...curry", "...gravy") someone adds doesn't
+// wrongly block an otherwise-good match.
 function fuzzyFoodMatch(phraseLower){
   const words = coreWords(phraseLower);
   if(words.length === 0) return null;
+  const requiredMatches = words.length <= 2 ? words.length : words.length - 1;
   let best = null, bestScore = 0;
   FOODS.forEach(f=>{
     f.keywords.forEach(kw=>{
-      kw.split(/\s+/).forEach(kwWord=>{
-        if(kwWord.length < 4) return;
-        words.forEach(w=>{
+      const kwWords = kw.split(/\s+/).filter(kwWord => kwWord.length >= 4);
+      if(kwWords.length === 0) return;
+      let matchedCount = 0, total = 0;
+      words.forEach(w=>{
+        let wordBest = 0;
+        kwWords.forEach(kwWord=>{
           if(Math.abs(w.length - kwWord.length) > 2) return;
           const dist = levenshtein(w, kwWord);
           const score = 1 - dist / Math.max(w.length, kwWord.length);
-          if(score >= 0.75 && score > bestScore){ bestScore = score; best = f; }
+          if(score > wordBest) wordBest = score;
         });
+        if(wordBest >= 0.75) matchedCount++;
+        total += wordBest;
       });
+      if(matchedCount < requiredMatches) return;
+      const avgScore = total / words.length;
+      if(avgScore > bestScore){ bestScore = avgScore; best = f; }
     });
   });
   return best;
@@ -2333,13 +2357,16 @@ document.getElementById('photoInput').onchange = async ()=>{
 function renderParseReview(){
   const wrap = document.getElementById('parseReview');
   const list = document.getElementById('parseReviewList');
+  document.getElementById('parseConfirmStatus').textContent = '';
   if(pendingParse.length===0){ wrap.style.display='none'; return; }
   wrap.style.display='block';
   list.innerHTML = pendingParse.map((p,i)=>{
     if(!p.food){
-      return `<div class="parse-item nomatch">
+      const escapedRaw = p.raw.replace(/"/g, '&quot;');
+      return `<div class="parse-item nomatch" data-raw="${escapedRaw}">
         <input type="checkbox" disabled>
         <span class="pname">Couldn't match a food<span class="praw">"${p.raw}" — try the search box above, or it may be outside the database</span></span>
+        <button class="btn ghost small report-missing-btn" type="button">Report as missing</button>
       </div>`;
     }
     if(p.fuzzy){
@@ -2355,10 +2382,22 @@ function renderParseReview(){
       <input type="number" class="pqty" value="${p.qty}" min="0.25" step="0.25">
     </div>`;
   }).join('');
+
+  list.querySelectorAll('.report-missing-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      if(!currentUser) return;
+      const raw = btn.closest('.parse-item').dataset.raw;
+      btn.disabled = true;
+      btn.textContent = 'Sending…';
+      const { error } = await db.from('food_requests').insert({ user_id: currentUser.id, requested_name: raw });
+      btn.textContent = error ? "Couldn't send" : 'Reported — thanks';
+    };
+  });
 }
 
 document.getElementById('confirmParseBtn').onclick = async ()=>{
   if(!currentUser) return;
+  const statusEl = document.getElementById('parseConfirmStatus');
   const rows = [];
   document.querySelectorAll('#parseReviewList .parse-item:not(.nomatch)').forEach(row=>{
     const checkbox = row.querySelector('input[type=checkbox]');
@@ -2368,13 +2407,25 @@ document.getElementById('confirmParseBtn').onclick = async ()=>{
     const p = pendingParse[i];
     rows.push({ user_id: currentUser.id, entry_date: state.currentDate, food_id: p.food.id, servings: qty, meal: p.meal });
   });
+  // Nothing checked isn't necessarily a mistake (e.g. every match was a
+  // fuzzy guess the person correctly declined) — but it needs to say so
+  // rather than silently doing and showing nothing, which is impossible to
+  // tell apart from a bug.
+  if(rows.length === 0){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = 'Nothing was checked, so nothing was added — tick the items you want first.';
+    return;
+  }
+  const { error } = await db.from('diet_entries').insert(rows);
+  if(error){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = "Couldn't save: " + error.message;
+    return;
+  }
   pendingParse = [];
   document.getElementById('parseReview').style.display = 'none';
   document.getElementById('voiceText').value = '';
-  if(rows.length){
-    const { error } = await db.from('diet_entries').insert(rows);
-    if(error) console.error('Could not save parsed entries:', error.message);
-  }
+  statusEl.textContent = '';
   await refreshDietLog();
 };
 
@@ -2422,24 +2473,40 @@ if(!SpeechRecognition){
 // Lets someone tell us a food they searched for and couldn't find, so future
 // food-list updates can be prioritized by what people actually needed rather
 // than guessed at. Only ever writes the text they typed — no automatic
-// action follows from it, it's just a queue for us to review later.
-function offerFoodRequest(typed){
-  const reqRow = document.getElementById('requestFoodRow');
-  const reqStatus = document.getElementById('requestFoodStatus');
-  const reqBtn = document.getElementById('requestFoodBtn');
-  if(!typed){ reqRow.style.display = 'none'; return; }
-  reqRow.style.display = 'block';
-  reqStatus.textContent = '';
-  reqBtn.disabled = false;
-  reqBtn.onclick = async ()=>{
-    if(!currentUser) return;
-    reqBtn.disabled = true;
-    reqStatus.textContent = 'Sending…';
-    const { error } = await db.from('food_requests').insert({ user_id: currentUser.id, requested_name: typed });
-    if(error){ reqStatus.textContent = "Couldn't send: " + error.message; reqBtn.disabled = false; return; }
-    reqStatus.textContent = "Thanks — we'll consider adding it.";
+// action follows from it, it's just a queue for us to review later. This is
+// an always-visible link (not something that only appears after a failed
+// "Add to log" attempt) so it's actually easy to find.
+(function setupFoodRequest(){
+  const toggleBtn = document.getElementById('requestFoodBtn');
+  const form = document.getElementById('requestFoodForm');
+  const reqInput = document.getElementById('requestFoodInput');
+  const sendBtn = document.getElementById('requestFoodSendBtn');
+  const status = document.getElementById('requestFoodStatus');
+
+  toggleBtn.onclick = ()=>{
+    const opening = form.style.display === 'none';
+    form.style.display = opening ? 'flex' : 'none';
+    if(opening){
+      reqInput.value = foodInput.value.trim();
+      status.textContent = '';
+      reqInput.focus();
+    }
   };
-}
+
+  sendBtn.onclick = async ()=>{
+    if(!currentUser) return;
+    const typed = reqInput.value.trim();
+    if(!typed){ status.textContent = 'Type a food name first.'; return; }
+    sendBtn.disabled = true;
+    status.textContent = 'Sending…';
+    const { error } = await db.from('food_requests').insert({ user_id: currentUser.id, requested_name: typed });
+    sendBtn.disabled = false;
+    if(error){ status.textContent = "Couldn't send: " + error.message; return; }
+    status.textContent = "Thanks — we'll consider adding it.";
+    reqInput.value = '';
+    form.style.display = 'none';
+  };
+})();
 
 document.getElementById('addFoodBtn').onclick = async ()=>{
   if(!currentUser) return;
@@ -2450,11 +2517,9 @@ document.getElementById('addFoodBtn').onclick = async ()=>{
     hint.textContent = typed
       ? `"${typed}" isn't in the food list yet — pick a suggestion as you type.`
       : 'Start typing a food name and pick one of the suggestions.';
-    offerFoodRequest(typed);
     return;
   }
   hint.textContent = '';
-  document.getElementById('requestFoodRow').style.display = 'none';
   const servings = +document.getElementById('servings').value || 1;
   const meal = getSel('mealGroup');
   const { error } = await db.from('diet_entries').insert({
@@ -4339,7 +4404,7 @@ logDateInput.value = TODAY_STR;
 logDateInput.onchange = async ()=>{
   state.currentDate = logDateInput.value || TODAY_STR;
   document.getElementById('addFoodHint').textContent = '';
-  document.getElementById('requestFoodRow').style.display = 'none';
+  document.getElementById('requestFoodForm').style.display = 'none';
   await refreshDietLog();
 };
 document.getElementById('todayBtn').onclick = async ()=>{
