@@ -2545,6 +2545,64 @@ document.getElementById('microToggleRow').onclick = ()=>{
   label.textContent = open ? 'Show details ▾' : 'Hide details ▴';
 };
 
+// ---------- Actionable Insights: deterministic gap ranking + rolling-window pattern detection ----------
+// Everything numeric here is computed in plain JS from real logged data, never guessed by the AI —
+// the AI's job (in api/insights.js) is only to turn these already-correct numbers into calm, honest
+// prose, following the fixed template and situation taxonomy from the feature spec.
+
+const ALL_NUTRIENT_DEFS = [...macroDefs, ...microDefs];
+
+// Rank today's non-met gaps largest to smallest (by % off target), tagging direction (short/over).
+function rankGapsForInsight(t, tg){
+  return ALL_NUTRIENT_DEFS.map(def=>{
+    const consumed = t[def.key] || 0;
+    const target = tg[def.key] || 0;
+    const { cls } = gapStatus(def, consumed, target);
+    if(cls === 'met') return null;
+    const deltaAbs = Math.abs(target - consumed);
+    const deltaPct = target > 0 ? deltaAbs / target : 0;
+    return {
+      label: def.label, unit: def.unit,
+      consumed: Math.round(consumed * 10) / 10, target: Math.round(target * 10) / 10,
+      direction: cls, deltaPct: Math.round(deltaPct * 1000) / 1000, isLimit: def.type === 'limit'
+    };
+  }).filter(Boolean).sort((a, b) => b.deltaPct - a.deltaPct);
+}
+
+// Looks at the most recent (up to) 7 days that actually have a diet log entry, ending at endDateStr,
+// and flags any nutrient that's landed short (or over, for limit-type nutrients) on 4+ of them — the
+// "same gap keeps showing up" pattern from the spec's tone-calibration rule. Each flagged nutrient also
+// carries whether the flagged days themselves look lightly-logged (under half of kcal target that day),
+// which is the honest signal that some of the "gap" could be missing log entries rather than a real one.
+async function computeRollingWindowPatterns(tg, endDateStr){
+  const lookbackStart = new Date(endDateStr + 'T00:00:00');
+  lookbackStart.setDate(lookbackStart.getDate() - 29); // scan 30 days to find the last 7 that were logged
+  const byDate = await fetchEntriesRange(toDateStr(lookbackStart), endDateStr);
+  const loggedDates = Object.keys(byDate).filter(d => (byDate[d] || []).length > 0).sort();
+  const last7 = loggedDates.slice(-7);
+  if(last7.length === 0) return [];
+
+  const patterns = [];
+  ALL_NUTRIENT_DEFS.forEach(def=>{
+    let shortCount = 0, overCount = 0, shortLightlyLoggedCount = 0;
+    last7.forEach(d=>{
+      const dayTotals = totals(byDate[d]);
+      const { cls } = gapStatus(def, dayTotals[def.key], tg[def.key]);
+      const lightlyLogged = tg.kcal ? (dayTotals.kcal / tg.kcal) < 0.5 : false;
+      if(cls === 'short'){ shortCount++; if(lightlyLogged) shortLightlyLoggedCount++; }
+      if(cls === 'over'){ overCount++; }
+    });
+    const of = last7.length;
+    if(shortCount >= 4){
+      patterns.push({ label: def.label, direction: 'short', count: shortCount, of, possiblyUnderlogged: shortLightlyLoggedCount >= Math.ceil(shortCount / 2) });
+    }
+    if(overCount >= 4){
+      patterns.push({ label: def.label, direction: 'over', count: overCount, of, possiblyUnderlogged: false });
+    }
+  });
+  return patterns.sort((a, b) => b.count - a.count).slice(0, 4);
+}
+
 // ---------- Live AI insight (calls Claude via our serverless function) ----------
 async function renderInsight(t, tg){
   const insightEl = document.getElementById('insightText');
@@ -2558,14 +2616,22 @@ async function renderInsight(t, tg){
   suggEl.innerHTML = '';
 
   const goal = getSel('goalGroup');
+  const dateLabel = friendlyDate(state.currentDate);
+  const rankedGaps = rankGapsForInsight(t, tg);
+  const remainingKcal = Math.round((tg.kcal || 0) - (t.kcal || 0));
+
   try{
+    const patterns = await computeRollingWindowPatterns(tg, state.currentDate);
+
     const res = await fetch('/api/insights', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
       body: JSON.stringify({
-        targets: tg,
-        consumed: t,
+        dateLabel,
         goal,
+        remainingKcal,
+        rankedGaps,
+        patterns,
         foodNames: FOODS.map(f=>f.name)
       })
     });
@@ -2576,11 +2642,12 @@ async function renderInsight(t, tg){
     }
 
     insightEl.textContent = data.analysis;
-    suggEl.innerHTML = (data.suggestions||[]).map(s=>{
-      const f = FOODS.find(x=>x.name===s.name);
-      if(!f) return '';
-      return `<div class="item"><div class="t">${s.name}</div><div class="d">${s.reason} — ${f.protein}g protein, ${f.fiber}g fiber per serving.</div></div>`;
-    }).join('');
+    if(data.suggestion){
+      const f = FOODS.find(x=>x.name===data.suggestion.name);
+      suggEl.innerHTML = f ? `<div class="item"><div class="t">${data.suggestion.name}</div><div class="d">${data.suggestion.reason} — ${f.protein}g protein, ${f.fiber}g fiber per serving.</div></div>` : '';
+    } else {
+      suggEl.innerHTML = '';
+    }
   } catch(e){
     console.error('Insight error:', e);
     insightEl.textContent = "Couldn't reach the AI analysis just now — this usually means the server's Claude API key isn't set up yet, or there's a temporary connection issue. Try again in a moment.";
