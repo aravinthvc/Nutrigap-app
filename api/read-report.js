@@ -102,7 +102,16 @@ Respond with ONLY a JSON object — no markdown, no code fences, no commentary b
 
     if (!response.ok) {
       const errText = await response.text();
-      res.status(502).json({ error: 'Claude API error: ' + errText });
+      // Anthropic's error responses are JSON with the actual human-readable
+      // reason nested inside (e.g. an expired API key or a low credit
+      // balance) — pull that out instead of forwarding the raw JSON blob,
+      // so whatever's actually wrong is plain and readable on the page.
+      let message = errText;
+      try {
+        const errJson = JSON.parse(errText);
+        if (errJson && errJson.error && errJson.error.message) message = errJson.error.message;
+      } catch (parseErr) { /* not JSON — fall back to the raw text as-is */ }
+      res.status(502).json({ error: message });
       return;
     }
 
