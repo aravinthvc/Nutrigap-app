@@ -3118,6 +3118,22 @@ document.getElementById('saveReportBtn').onclick = async ()=>{
   if(!currentUser || !lastAnalyzedReport) return;
   const statusEl = document.getElementById('saveReportStatus');
   statusEl.style.color = 'var(--ink-faint)';
+
+  // Keep the actual uploaded file, not just the values read off it, so
+  // "View original" can later show the real document. This goes straight
+  // from the browser to storage — it never passes through the analysis
+  // endpoint, so it isn't affected by that endpoint's size limit.
+  let storagePath = null;
+  if(selectedFile){
+    statusEl.textContent = 'Saving — uploading your original file…';
+    storagePath = `${currentUser.id}/medical-reports/${Date.now()}-${sanitizeFileName(selectedFile.name)}`;
+    const { error: uploadErr } = await db.storage.from('medical-documents').upload(storagePath, selectedFile, { upsert: false });
+    if(uploadErr){
+      console.error('Original file upload failed:', uploadErr.message);
+      storagePath = null; // Not fatal — the extracted values below still get saved either way.
+    }
+  }
+
   statusEl.textContent = 'Saving…';
   const { error } = await db.from('medical_reports').insert({
     user_id: currentUser.id,
@@ -3125,14 +3141,18 @@ document.getElementById('saveReportBtn').onclick = async ()=>{
     report_date: lastAnalyzedReport.reportDate || null,
     file_name: lastAnalyzedReport.fileName || null,
     markers: lastAnalyzedReport.markers || [],
+    storage_path: storagePath,
   });
   if(error){
     statusEl.style.color = 'var(--rust)';
     statusEl.textContent = "Couldn't save: " + error.message;
+    if(storagePath) await db.storage.from('medical-documents').remove([storagePath]); // avoid an orphaned file with no record
     return;
   }
   statusEl.style.color = 'var(--teal-deep)';
-  statusEl.textContent = 'Saved to your reports below.';
+  statusEl.textContent = storagePath
+    ? 'Saved to your reports below, with your original file attached.'
+    : "Saved to your reports below. Your original file couldn't be attached this time — only the extracted values were saved.";
   await loadSavedReports();
 };
 
@@ -3176,6 +3196,7 @@ function renderSavedReportsList(reports){
         </div>
         <div class="sactions">
           <button class="btn ghost small toggle-btn">View</button>
+          ${r.storage_path ? '<button class="btn ghost small original-btn">View original</button>' : ''}
           <button class="btn ghost small download-btn">Download CSV</button>
           <button class="btn ghost small delete-btn">Delete</button>
         </div>
@@ -3209,11 +3230,23 @@ function renderSavedReportsList(reports){
 
     card.querySelector('.delete-btn').onclick = (e)=>{
       showInlineConfirm(e.target, 'Permanently delete this saved report?', async ()=>{
+        const report = reports.find(r=>String(r.id)===String(id));
+        if(report && report.storage_path){
+          await db.storage.from('medical-documents').remove([report.storage_path]);
+        }
         const { error } = await db.from('medical_reports').delete().eq('id', id);
         if(error){ console.error('Could not delete report:', error.message); return; }
         await loadSavedReports();
       });
     };
+
+    const originalBtn = card.querySelector('.original-btn');
+    if(originalBtn){
+      originalBtn.onclick = ()=>{
+        const report = reports.find(r=>String(r.id)===String(id));
+        if(report && report.storage_path) viewVisitFile(report.storage_path);
+      };
+    }
 
     card.querySelector('.download-btn').onclick = ()=>{
       const report = reports.find(r=>String(r.id)===String(id));
