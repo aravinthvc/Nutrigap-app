@@ -86,7 +86,7 @@ Respond with ONLY a JSON object — no markdown, no code fences, no commentary b
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 8192,
+        max_tokens: 24000,
         system: systemPrompt,
         messages: [
           {
@@ -119,6 +119,17 @@ Respond with ONLY a JSON object — no markdown, no code fences, no commentary b
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
+      // A response that got cut off mid-way (because this one page/chunk had
+      // more values than fit in the reply) will always fail to parse as JSON
+      // — check for that specific, actionable case first, since "couldn't
+      // parse the AI response" on its own doesn't tell the person what to do.
+      if (data.stop_reason === 'max_tokens') {
+        res.status(502).json({
+          error: 'This page has more values than could be read in one pass. Try uploading it as a smaller group of pages (or one page at a time).',
+          truncated: true,
+        });
+        return;
+      }
       res.status(502).json({
         error: 'Could not parse the AI response as JSON.',
         rawPreview: cleaned.slice(0, 300),
