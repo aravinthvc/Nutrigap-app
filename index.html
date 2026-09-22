@@ -2830,7 +2830,9 @@ async function renderInsight(t, tg){
     renderSuggestions(data.suggestions || []);
   } catch(e){
     console.error('Insight error:', e);
-    insightEl.textContent = "Couldn't reach the AI analysis just now — this usually means the server's Claude API key isn't set up yet, or there's a temporary connection issue. Try again in a moment.";
+    insightEl.textContent = e.message
+      ? "Couldn't reach the AI analysis just now: " + e.message
+      : "Couldn't reach the AI analysis just now — there may be a temporary connection issue. Try again in a moment.";
     renderSuggestions([]);
   }
 }
