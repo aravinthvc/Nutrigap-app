@@ -107,7 +107,7 @@
   }
   .nav-item.active .n{ color:var(--teal-deep); }
 
-  .main{ padding:36px 44px 80px; max-width:980px; }
+  .main{ padding:36px 44px 80px; max-width:980px; min-width:0; }
   .panel{ display:none; }
   .panel.active{ display:block; animation:rise .35s ease; }
   @keyframes rise{ from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:translateY(0);} }
@@ -117,7 +117,21 @@
   .page-head p{ color:var(--ink-soft); margin:0; max-width:62ch; font-size:14.5px; }
 
   .grid-2{ display:grid; grid-template-columns:1.1fr 0.9fr; gap:28px; align-items:start; }
-  @media (max-width: 880px){ .grid-2{ grid-template-columns:1fr; } .shell{ grid-template-columns:1fr; } .sidebar{ position:relative; height:auto; } }
+  .grid-2 > div{ min-width:0; }
+  @media (max-width: 880px){
+    .grid-2{ grid-template-columns:1fr; }
+    .shell{ grid-template-columns:1fr; }
+    .sidebar{
+      position:sticky; top:0; z-index:20; height:auto;
+      border-right:none; border-bottom:1px solid var(--line);
+    }
+    .brand{ padding:14px 16px 8px; }
+    .brand .tag{ display:none; }
+    .nav{ display:flex; overflow-x:auto; -webkit-overflow-scrolling:touch; padding:4px 12px 12px; gap:4px; }
+    .nav-item{ width:auto; flex:0 0 auto; white-space:nowrap; margin-bottom:0; }
+    .main{ padding:24px 16px 60px; }
+  }
+  .table-scroll{ overflow-x:auto; -webkit-overflow-scrolling:touch; }
 
   .card{
     background:var(--panel);
@@ -368,8 +382,13 @@
     .meal-sugg{ grid-template-columns:1fr; }
     .wearable-grid{ grid-template-columns:repeat(2,1fr); }
     .sync-stats{ grid-template-columns:repeat(2,1fr); }
+    .outcome-stats{ grid-template-columns:repeat(2,1fr); }
     .grid-2{ grid-template-columns:1fr; }
     .main{ padding:24px 18px 60px; }
+    .page-head h1{ font-size:23px; }
+    .target-card .kcal{ font-size:36px; }
+    .saved-report .sactions, .visit-card .vactions{ width:100%; }
+    .saved-report .sactions .btn, .visit-card .vactions .btn{ flex:1; }
   }
 
   /* ---- Auth gate ---- */
@@ -602,7 +621,7 @@
       <button type="submit" class="btn" style="width:100%; justify-content:center;">Create account</button>
     </form>
 
-    <div class="auth-note">This is a visual demo — no account is created and nothing leaves your browser. A production build would use a real auth provider (e.g. Firebase Auth or Auth0) with Google Sign-In through Google Identity Services (OAuth 2.0), verified server-side.</div>
+    <div class="auth-note">Your account is real and secure — sign-in is handled by Supabase Auth (including Google Sign-In), and your data is private to your account, visible only to you.</div>
   </div>
 </div>
 
@@ -836,12 +855,14 @@
           </div>
 
           <div class="card" style="margin-top:20px;">
+            <div class="table-scroll">
             <table class="log" id="logTable">
               <thead>
                 <tr><th>Food</th><th>Meal</th><th>Servings</th><th>Calories</th><th>Protein</th><th>Carbs</th><th>Fat</th><th></th></tr>
               </thead>
               <tbody id="logBody"></tbody>
             </table>
+            </div>
             <div class="empty" id="logEmpty">No entries yet for this day — add your first food above.</div>
             <div id="saveStatus" style="font-size:11.5px; color:var(--ink-faint); margin-top:10px; min-height:14px;"></div>
           </div>
@@ -916,12 +937,14 @@
           </div>
 
           <div class="card" style="margin-top:20px;">
+            <div class="table-scroll">
             <table class="log" id="activityTable">
               <thead>
                 <tr><th>Activity</th><th>Intensity</th><th>Minutes</th><th>Est. calories</th><th></th></tr>
               </thead>
               <tbody id="activityBody"></tbody>
             </table>
+            </div>
             <div class="empty" id="activityEmpty">No activity logged for this day yet.</div>
             <div id="activitySaveStatus" style="font-size:11.5px; color:var(--ink-faint); margin-top:10px; min-height:14px;"></div>
           </div>
@@ -1067,10 +1090,12 @@
         <div id="reportOutput" style="display:none; margin-top:24px;">
           <div id="reportPartialWarning" class="disclaimer warn" style="display:none; margin-top:0; margin-bottom:14px;"></div>
           <div id="reportMeta" class="note" style="margin-top:0; display:none;"></div>
+          <div class="table-scroll">
           <table class="report">
             <thead><tr><th>Marker</th><th>Reported value</th><th>Reference range (from your report)</th><th></th></tr></thead>
             <tbody id="reportBody"></tbody>
           </table>
+          </div>
           <div class="note" id="reportSummaryNote"></div>
           <div style="text-align:right; margin-top:14px;">
             <button class="btn ghost small" id="saveReportBtn">Save to my reports</button>
@@ -3246,6 +3271,7 @@ function renderSavedReportsList(reports){
         </div>
       </div>
       <div class="sbody">
+        <div class="table-scroll">
         <table class="report">
           <thead><tr><th>Marker</th><th>Value</th><th>Unit</th><th>Reference range</th><th>Status</th></tr></thead>
           <tbody>
@@ -3262,6 +3288,7 @@ function renderSavedReportsList(reports){
             }).join('')}
           </tbody>
         </table>
+        </div>
         <div class="note" style="margin-top:10px;">These values are read directly from your uploaded report and can't be edited here — that keeps this record matching what your lab actually printed. If a value looks wrong, it's worth checking the original report or re-uploading it.</div>
       </div>
     </div>`;
@@ -3765,10 +3792,12 @@ function renderTrendCards(entries, filterCategory){
         : `<div class="single-note">Only one reading saved so far — save another report with this marker to see a trend line.</div>`}
       ${rangeDiffers ? `<div class="range-differs-note">Reference range differs across your saved reports for this marker — likely different labs or methods. Position above uses your most recent report's range.</div>` : ''}
       <span class="trend-table-toggle">Show all readings</span>
+      <div class="table-scroll">
       <table class="trend-detail-table">
         <thead><tr><th>Date</th><th>Value</th><th>Reference range</th><th>Status</th></tr></thead>
         <tbody>${points.map(p=>`<tr><td>${p.dateLabel}</td><td>${p.rawValue}${p.unit?' '+p.unit:''}</td><td>${p.referenceRange || '—'}</td><td>${p.flag}</td></tr>`).join('')}</tbody>
       </table>
+      </div>
     </div>`;
   }).join('');
 
