@@ -311,6 +311,8 @@
   }
   .meal-sugg .item .t{ font-weight:500; font-size:14px; margin-bottom:3px; }
   .meal-sugg .item .d{ font-size:12.5px; color:var(--ink-soft); }
+  .meal-sugg .item .add-sugg-btn{ margin-top:10px; }
+  @media (max-width: 560px){ .meal-sugg{ grid-template-columns:1fr; } }
 
   /* Medical */
   .upload-box{
@@ -858,6 +860,7 @@
             </div>
             <h3 id="insightHeading">What today's log suggests</h3>
             <p id="insightText">Add some food to your log to see an analysis here.</p>
+            <div id="suggLabel" style="font-size:12.5px; color:var(--ink-soft); font-weight:500; margin-top:16px; display:none;">Foods to consider</div>
             <div class="meal-sugg" id="mealSugg"></div>
           </div>
 
@@ -2789,14 +2792,13 @@ async function computeRollingWindowPatterns(tg, endDateStr){
 // ---------- Live AI insight (calls Claude via our serverless function) ----------
 async function renderInsight(t, tg){
   const insightEl = document.getElementById('insightText');
-  const suggEl = document.getElementById('mealSugg');
   if(currentEntries().length===0){
     insightEl.textContent = 'Add some food to your log to see an analysis here.';
-    suggEl.innerHTML = '';
+    renderSuggestions([]);
     return;
   }
   insightEl.textContent = 'Analyzing your log…';
-  suggEl.innerHTML = '';
+  renderSuggestions([]);
 
   const goal = getSel('goalGroup');
   const dateLabel = friendlyDate(state.currentDate);
@@ -2825,17 +2827,57 @@ async function renderInsight(t, tg){
     }
 
     insightEl.textContent = data.analysis;
-    if(data.suggestion){
-      const f = FOODS.find(x=>x.name===data.suggestion.name);
-      suggEl.innerHTML = f ? `<div class="item"><div class="t">${data.suggestion.name}</div><div class="d">${data.suggestion.reason} — ${f.protein}g protein, ${f.fiber}g fiber per serving.</div></div>` : '';
-    } else {
-      suggEl.innerHTML = '';
-    }
+    renderSuggestions(data.suggestions || []);
   } catch(e){
     console.error('Insight error:', e);
     insightEl.textContent = "Couldn't reach the AI analysis just now — this usually means the server's Claude API key isn't set up yet, or there's a temporary connection issue. Try again in a moment.";
-    suggEl.innerHTML = '';
+    renderSuggestions([]);
   }
+}
+
+// Renders the ranked shortlist of real foods that would help close the
+// current gaps, each with a one-click "Add to log" — inserting into
+// diet_entries exactly the same way the manual add-food form above does
+// (same fields, servings defaulted to 1, same currently-selected meal), so
+// acting on a suggestion is no different from adding that food yourself.
+function renderSuggestions(suggestions){
+  const suggEl = document.getElementById('mealSugg');
+  const labelEl = document.getElementById('suggLabel');
+  const items = (suggestions || [])
+    .map(s => ({ s, f: FOODS.find(x => x.name === s.name) }))
+    .filter(x => x.f);
+
+  if(items.length === 0){
+    labelEl.style.display = 'none';
+    suggEl.innerHTML = '';
+    return;
+  }
+  labelEl.style.display = 'block';
+  suggEl.innerHTML = items.map(({s, f})=>`
+    <div class="item">
+      <div class="t">${s.name}</div>
+      <div class="d">${s.reason} — ${f.protein}g protein, ${f.fiber}g fiber per serving.</div>
+      <button class="btn ghost small add-sugg-btn" data-food-id="${f.id}">Add to log</button>
+    </div>`).join('');
+
+  suggEl.querySelectorAll('.add-sugg-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      if(!currentUser) return;
+      btn.disabled = true;
+      btn.textContent = 'Adding…';
+      const meal = getSel('mealGroup');
+      const { error } = await db.from('diet_entries').insert({
+        user_id: currentUser.id, entry_date: state.currentDate, food_id: btn.dataset.foodId, servings: 1, meal
+      });
+      if(error){
+        console.error('Could not add suggested food:', error.message);
+        btn.disabled = false;
+        btn.textContent = "Couldn't add — try again";
+        return;
+      }
+      await refreshDietLog(); // re-renders the log, gaps, and this list (which will reflect the now-smaller gap)
+    };
+  });
 }
 
 // ---------- Medical report reader (real, calls Claude via our serverless function) ----------
