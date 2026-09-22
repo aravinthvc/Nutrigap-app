@@ -6,8 +6,8 @@
 // gaps exist, how big they are, which nutrients keep coming up short across
 // the last several logged days) and sends the already-correct numbers here.
 // This function's only job is turning those numbers into calm, honest
-// prose and picking one real food to suggest — it never computes or
-// invents a number of its own.
+// prose and picking a short ranked list of real foods to suggest — it
+// never computes or invents a number of its own.
 
 module.exports = async function handler(req, res) {
   if (req.method !== 'POST') {
@@ -45,7 +45,7 @@ module.exports = async function handler(req, res) {
 You are given one person's nutrient gaps for a specific day, already computed and ranked for you by the app — a fixed set of facts you must explain, never recompute, re-rank, or add to.
 
 Respond with ONLY a JSON object — no markdown, no code fences, no preamble, no text before or after it — in exactly this shape:
-{"analysis": "...", "suggestion": {"name": "...", "reason": "..."} | null}
+{"analysis": "...", "suggestions": [{"name": "...", "reason": "..."}, ...]}
 
 Follow this exact structure for "analysis" (2-5 sentences), in plain, non-clinical, calm language:
 1. Open by naming the day (use the exact dateLabel given, e.g. "Today's log shows..." or "<dateLabel>'s log shows...").
@@ -59,10 +59,13 @@ Tone rules for the "patterns" array — each entry means this exact nutrient has
 - For a pattern entry with possiblyUnderlogged: true, you must use honest, ambiguous framing instead of asserting a real dietary shortfall — something like: "<nutrient> has landed short on N of the last M logged days — a few of those days were lightly logged overall, so part of that could be food that wasn't entered rather than a real gap." Never claim confidently that this reflects the person's actual diet when possiblyUnderlogged is true; naming the ambiguity honestly is more useful than a wrong confident explanation.
 - Only mention nutrients that appear in the patterns array, and only the day-counts you were given — never a nutrient or number that isn't there.
 
-The suggestion:
-- Set "suggestion" to null when rankedGaps is empty (there's nothing to close), or when remainingKcal is at or below 0 and the goal is not "gain" (no calorie room left to add anything today).
-- Otherwise name exactly ONE food, copied EXACTLY character-for-character from the provided foodNames list — never invent a food, dish, or brand not on that list — that would help close the largest gap(s) in rankedGaps, and that reasonably fits within remainingKcal when remainingKcal is a meaningful positive number.
-- "reason" is a short phrase (under 16 words) that ties the suggestion to BOTH the remaining calorie budget and the gap(s) it helps close, in the direction of the stated goal.
+The suggestions — this is a shortlist of individual foods for the person to choose from and add to their log themselves, NOT a combined meal, so don't reason about eating all of them together or about which meal (breakfast/lunch/dinner) they'd go with:
+- Set "suggestions" to an empty array [] when rankedGaps is empty (there's nothing to close), or when remainingKcal is at or below 0 and the goal is not "gain" (no calorie room left to add anything today).
+- Otherwise return up to 4 foods, each copied EXACTLY character-for-character from the provided foodNames list — never invent a food, dish, or brand not on that list. Return fewer than 4 if the food list genuinely doesn't offer that many reasonable, distinct options — never pad the list with a weak or repetitive pick just to reach 4.
+- Every suggested food must independently help close the largest gap(s) in rankedGaps and reasonably fit within remainingKcal on its own (these are alternatives to pick ONE from, not amounts to sum together).
+- Prefer spreading the list across DIFFERENT gaps from rankedGaps where the food list allows it (e.g. one pick mainly for the top gap, another for the next one down), rather than 4 foods that all happen to address only the single biggest gap — but never force a weak pick onto a lesser gap just for variety; a food that strongly addresses the top gap is always a legitimate choice.
+- Never repeat the same food twice in the list.
+- Each "reason" is a short phrase (under 16 words) naming which specific gap(s) that food helps close, in the direction of the stated goal.
 
 General rules:
 - Never state or imply a guaranteed outcome. Use language like "may help" — never "will fix" or "will cause".
@@ -88,7 +91,7 @@ Available foods — choose the suggestion name ONLY from this exact list: ${JSON
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 800,
+        max_tokens: 1200,
         system: systemPrompt,
         messages: [
           { role: 'user', content: userPrompt },
@@ -129,13 +132,20 @@ Available foods — choose the suggestion name ONLY from this exact list: ${JSON
       return;
     }
 
-    // Guardrail: drop the suggestion if its name isn't an exact match in our
+    // Guardrail: drop any suggestion whose name isn't an exact match in our
     // real food list, in case the model still slips one in despite the
-    // instruction above — we never want to show a fabricated food.
+    // instruction above — we never want to show a fabricated food. Also
+    // dedupe by name and cap at 4, as a backstop against the model not
+    // following those parts of the instructions either.
     const validNames = new Set(foodNames);
-    if (!parsed.suggestion || !validNames.has(parsed.suggestion.name)) {
-      parsed.suggestion = null;
-    }
+    const seen = new Set();
+    parsed.suggestions = Array.isArray(parsed.suggestions)
+      ? parsed.suggestions.filter(s => {
+          if (!s || typeof s.name !== 'string' || !validNames.has(s.name) || seen.has(s.name)) return false;
+          seen.add(s.name);
+          return true;
+        }).slice(0, 4)
+      : [];
 
     res.status(200).json(parsed);
   } catch (e) {
