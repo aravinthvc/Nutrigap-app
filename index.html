@@ -376,6 +376,19 @@
     background:var(--line-soft);
     color:var(--ink-soft);
   }
+  /* Veg / Non-Veg / Egg color coding -- mirrors the green/brown FSSAI dot mark
+     used on Indian packaged food labels, so it reads instantly at a glance. */
+  .mealbox-tag.veg{ background:#e8f5e9; color:#1b5e20; }
+  .mealbox-tag.nonveg{ background:#fdecea; color:#b71c1c; }
+  .mealbox-tag.egg{ background:#fff3e0; color:#8a5300; }
+  .diet-dot{
+    display:inline-block; width:8px; height:8px; border-radius:2px;
+    margin-right:5px; vertical-align:middle; position:relative; top:-1px;
+  }
+  .diet-dot.veg{ background:#2e7d32; border:1.5px solid #1b5e20; }
+  .diet-dot.nonveg{ background:#c62828; border:1.5px solid #8e0000; }
+  .diet-dot.egg{ background:#f9a825; border:1.5px solid #a66a00; }
+  #mealboxTypeGroup button{ display:inline-flex; align-items:center; }
   .mealbox-card .macros{ display:flex; flex-wrap:wrap; gap:8px 14px; font-size:12.5px; color:var(--ink-soft); }
   .mealbox-card .macros b{ color:var(--ink); font-weight:500; }
   .mealbox-card .fill-line{ font-size:12px; color:var(--teal-deep); font-weight:500; margin-top:9px; }
@@ -684,6 +697,41 @@
   .follow-up-item .fdate{ font-family:'IBM Plex Mono', monospace; font-size:12.5px; }
   .follow-up-item .fdate.overdue{ color:var(--rust); }
   .recipe-item ol{ margin:8px 0 0; padding-left:18px; font-size:12.5px; }
+
+  /* Dietitian: chat */
+  .dchat-log{
+    display:flex; flex-direction:column; gap:10px;
+    max-height:420px; overflow-y:auto; padding:4px 2px; margin-bottom:14px;
+  }
+  .dchat-msg{ max-width:78%; padding:10px 14px; border-radius:14px; font-size:14px; line-height:1.45; }
+  .dchat-msg.user{ align-self:flex-end; background:var(--teal); color:#fff; border-bottom-right-radius:4px; }
+  .dchat-msg.assistant{ align-self:flex-start; background:var(--line-soft); color:var(--ink); border-bottom-left-radius:4px; }
+  .dchat-msg.pending{ opacity:.55; }
+  .dchat-msg.error{ align-self:flex-start; background:var(--rust-wash); color:var(--rust); }
+  .dchat-input-row{ display:flex; gap:10px; align-items:flex-end; }
+  .dchat-input-row textarea{
+    flex:1; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s);
+    font-family:inherit; font-size:14px; resize:vertical;
+  }
+  @media (max-width:560px){ .dchat-msg{ max-width:90%; } }
+
+  /* Dietitian: appointment booking */
+  @keyframes dietitianPulse{
+    0%{ box-shadow:0 0 0 0 rgba(43,110,90,.35); }
+    70%{ box-shadow:0 0 0 10px rgba(43,110,90,0); }
+    100%{ box-shadow:0 0 0 0 rgba(43,110,90,0); }
+  }
+  .dietitian-highlight{ animation:dietitianPulse 1.5s ease-out 2; border-color:var(--teal) !important; }
+  .appt-card{ border:1px solid var(--line); border-radius:var(--radius-m); padding:14px 16px; margin-top:12px; }
+  .appt-card .appt-row{ display:flex; justify-content:space-between; align-items:flex-start; gap:10px; flex-wrap:wrap; }
+  .appt-card .appt-main{ font-weight:500; font-size:14.5px; }
+  .appt-card .appt-meta{ font-size:12.5px; color:var(--ink-soft); margin-top:2px; }
+  .appt-card .appt-notes{ font-size:13px; color:var(--ink); margin-top:10px; line-height:1.5; white-space:pre-wrap; }
+  .appt-status{ font-size:11px; padding:3px 9px; border-radius:20px; font-weight:500; white-space:nowrap; }
+  .appt-status.requested{ background:#fff3e0; color:#8a5300; }
+  .appt-status.confirmed{ background:#e8f5e9; color:#1b5e20; }
+  .appt-status.completed{ background:var(--line-soft); color:var(--ink-soft); }
+  .appt-status.cancelled{ background:#fdecea; color:#b71c1c; }
 </style>
 </head>
 <body>
@@ -1058,9 +1106,9 @@
         </div>
         <div class="segmented" id="mealboxTypeGroup">
           <button type="button" class="sel" data-val="all">All</button>
-          <button type="button" data-val="Veg">Veg</button>
-          <button type="button" data-val="Non-Veg">Non-Veg</button>
-          <button type="button" data-val="Egg">Egg</button>
+          <button type="button" data-val="Veg"><span class="diet-dot veg"></span>Veg</button>
+          <button type="button" data-val="Non-Veg"><span class="diet-dot nonveg"></span>Non-Veg</button>
+          <button type="button" data-val="Egg"><span class="diet-dot egg"></span>Egg</button>
         </div>
 
         <div class="mealbox-count" id="mealboxCount"></div>
@@ -1395,6 +1443,67 @@
       </div>
     </section>
 
+    <!-- DIETITIAN -->
+    <section class="panel" data-panel="dietitian">
+      <div class="page-head">
+        <h1>Dietitian</h1>
+        <p>Chat with our AI first line to think through your situation and goals, then request a real online or offline consultation with one of Box Full of Beans' panel dietitians whenever you're ready.</p>
+      </div>
+
+      <div class="disclaimer">
+        <strong>What this AI can and can't do</strong>
+        This assistant can help you think through your situation and goals, and it'll point you toward booking when that's the right next step — but it isn't a dietitian, can't diagnose anything, and can't actually book, confirm, or change an appointment itself. Only submitting the form below does that; a real person on our team confirms it with you afterward.
+      </div>
+
+      <div class="card" id="dietitianChatCard">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Chat</h3>
+        <div class="dchat-log" id="dietitianChatLog"></div>
+        <div class="empty" id="dietitianChatEmpty">Say hello, or tell us what's on your mind — this AI can help you think it through.</div>
+        <div class="dchat-input-row">
+          <textarea id="dietitianChatInput" rows="2" placeholder="e.g. I want to lose weight for my sister's wedding in 3 months, not sure where to start…"></textarea>
+          <button class="btn" id="dietitianChatSendBtn">Send</button>
+        </div>
+        <div id="dietitianChatStatus" style="font-size:12px; color:var(--ink-faint); margin-top:6px;"></div>
+      </div>
+
+      <div class="card" id="dietitianBookingCard" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Request a consultation</h3>
+        <p style="font-size:13px; color:var(--ink-soft); margin:-8px 0 16px;">Tell us when works, and one of our panel dietitians will confirm it with you directly — this isn't an instant booking.</p>
+        <div class="segmented" id="apptModeGroup">
+          <button type="button" class="sel" data-val="online">Online</button>
+          <button type="button" data-val="offline">In person</button>
+        </div>
+        <div class="field-row" style="margin-top:16px;">
+          <div class="field">
+            <label for="apptDate">Preferred date</label>
+            <input type="date" id="apptDate">
+          </div>
+          <div class="field">
+            <label for="apptTimeWindow">Preferred time</label>
+            <select id="apptTimeWindow">
+              <option value="Morning (9am-12pm)">Morning (9am–12pm)</option>
+              <option value="Afternoon (12pm-4pm)">Afternoon (12pm–4pm)</option>
+              <option value="Evening (4pm-8pm)">Evening (4pm–8pm)</option>
+            </select>
+          </div>
+        </div>
+        <div class="field">
+          <label for="apptNotes">Anything you'd like the dietitian to know beforehand — optional</label>
+          <textarea id="apptNotes" rows="3" placeholder="e.g. focus areas, or anything from the chat above worth flagging" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:14px; resize:vertical;"></textarea>
+        </div>
+        <div style="text-align:right;">
+          <button class="btn" id="apptRequestBtn">Request appointment</button>
+        </div>
+        <div id="apptRequestStatus" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your requests</h3>
+        <div id="apptList"></div>
+        <div class="empty" id="apptEmpty">No appointment requests yet.</div>
+      </div>
+    </section>
+
     <!-- WEARABLES -->
     <section class="panel" data-panel="wearables">
       <div class="page-head">
@@ -1576,6 +1685,7 @@ const sections = [
   {id:'trends', label:'Trends & history'},
   {id:'medical', label:'Medical reports'},
   {id:'visits', label:'Doctor visits'},
+  {id:'dietitian', label:'Dietitian'},
   {id:'wearables', label:'Wearables'},
 ];
 const nav = document.getElementById('nav');
@@ -1595,6 +1705,7 @@ function showPanel(id){
   if(id === 'mealbox') renderMealBoxes(true);
   if(id === 'medical') loadSavedReports();
   if(id === 'visits') loadVisits();
+  if(id === 'dietitian') loadDietitianSection();
   if(id === 'activity') refreshActivityLog();
   if(id === 'wearables') renderRealWearables();
 }
@@ -3129,9 +3240,19 @@ function mealBoxFillLine(d, remaining){
   return bits.length ? `<div class="fill-line">Covers ${bits.join(', ')} of what's left today</div>` : '';
 }
 
+function mealboxTypeClass(type){
+  if(type === 'Veg') return 'veg';
+  if(type === 'Non-Veg') return 'nonveg';
+  if(type === 'Egg') return 'egg';
+  return '';
+}
+
 function mealBoxCard(d, remaining){
-  const tags = [d.meal_type, d.meal_course].filter(Boolean)
-    .map(t => `<span class="mealbox-tag">${t}</span>`).join('');
+  const typeTag = d.meal_type
+    ? `<span class="mealbox-tag ${mealboxTypeClass(d.meal_type)}"><span class="diet-dot ${mealboxTypeClass(d.meal_type)}"></span>${d.meal_type}</span>`
+    : '';
+  const courseTag = d.meal_course ? `<span class="mealbox-tag">${d.meal_course}</span>` : '';
+  const tags = typeTag + courseTag;
   const macros = [
     Number.isFinite(d.kcal) ? `<span><b>${Math.round(d.kcal)}</b> kcal</span>` : '',
     Number.isFinite(d.protein) ? `<span><b>${d.protein}g</b> protein</span>` : '',
@@ -4959,6 +5080,235 @@ document.getElementById('activityUpdateProfileBtn').onclick = ()=>{
   document.getElementById('activityUpdateProfileStatus').textContent = 'Updated — see Profile & targets for your new numbers.';
   document.getElementById('activityUpdateProfileRow').style.display = 'none';
 };
+
+// ---------- Dietitian (AI first line chat + real appointment requests) ----------
+// The chat is an AI first line, not a real dietitian -- see the panel's own
+// disclaimer and api/dietitian-chat.js's system prompt for the actual
+// guardrails. This code's job is just: persist the conversation, call that
+// endpoint, and let the person request a real appointment through a plain
+// form -- the AI never creates, confirms, or changes an appointment itself.
+
+function escapeHtml(str){
+  return String(str)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+let dietitianMessages = []; // [{role:'user'|'assistant', content}]
+let dietitianSectionLoaded = false;
+
+async function loadDietitianSection(){
+  if(!currentUser) return;
+  const apptDateEl = document.getElementById('apptDate');
+  if(apptDateEl && !apptDateEl.min) apptDateEl.min = TODAY_STR;
+  await Promise.all([loadDietitianMessages(), loadAppointments()]);
+  dietitianSectionLoaded = true;
+}
+
+async function loadDietitianMessages(){
+  const { data, error } = await db.from('dietitian_messages').select('*')
+    .eq('user_id', currentUser.id).order('created_at', { ascending: true });
+  if(error){ console.error('Could not load dietitian chat:', error.message); return; }
+  dietitianMessages = (data || []).map(m => ({ role: m.role, content: m.content }));
+  renderDietitianChat();
+}
+
+function renderDietitianChat(extraPendingHtml){
+  const logEl = document.getElementById('dietitianChatLog');
+  const emptyEl = document.getElementById('dietitianChatEmpty');
+  if(!logEl) return;
+  if(dietitianMessages.length === 0 && !extraPendingHtml){
+    logEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+  logEl.innerHTML = dietitianMessages.map(m =>
+    `<div class="dchat-msg ${m.role}">${escapeHtml(m.content).replace(/\n/g,'<br>')}</div>`
+  ).join('') + (extraPendingHtml || '');
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// Reuses the same deterministic gap-ranking already computed for the Diet
+// log tab's AI insight, so the dietitian chat and that panel are always
+// looking at the identical numbers -- never a second, possibly-different
+// calculation of "what's off today."
+async function buildDietitianContext(){
+  const tg = state.targets;
+  const ctx = {};
+  const goal = getSel('goalGroup');
+  if(goal) ctx.goal = goal;
+  if(tg && tg.kcal) {
+    ctx.targets = tg;
+    const t = totals();
+    const rankedGaps = rankGapsForInsight(t, tg);
+    if(rankedGaps.length) ctx.rankedGaps = rankedGaps;
+    try{
+      const patterns = await computeRollingWindowPatterns(tg, state.currentDate);
+      if(patterns.length) ctx.patterns = patterns;
+    } catch(e){ /* patterns are a nice-to-have, not worth failing the chat over */ }
+  }
+  return ctx;
+}
+
+async function sendDietitianMessage(){
+  const input = document.getElementById('dietitianChatInput');
+  const sendBtn = document.getElementById('dietitianChatSendBtn');
+  const statusEl = document.getElementById('dietitianChatStatus');
+  const text = input.value.trim();
+  if(!text || !currentUser) return;
+
+  input.disabled = true;
+  sendBtn.disabled = true;
+  statusEl.textContent = '';
+
+  const { error: insertErr } = await db.from('dietitian_messages').insert({
+    user_id: currentUser.id, role: 'user', content: text,
+  });
+  if(insertErr){
+    statusEl.textContent = "Couldn't send — try again.";
+    input.disabled = false; sendBtn.disabled = false;
+    console.error('Could not save dietitian message:', insertErr.message);
+    return;
+  }
+  dietitianMessages.push({ role: 'user', content: text });
+  input.value = '';
+  renderDietitianChat('<div class="dchat-msg assistant pending">Thinking…</div>');
+
+  try{
+    const context = await buildDietitianContext();
+    const res = await fetch('/api/dietitian-chat', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ messages: dietitianMessages, context }),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+
+    const { error: replyErr } = await db.from('dietitian_messages').insert({
+      user_id: currentUser.id, role: 'assistant', content: data.reply,
+    });
+    if(replyErr) console.error('Could not save AI reply:', replyErr.message);
+
+    dietitianMessages.push({ role: 'assistant', content: data.reply });
+    renderDietitianChat();
+
+    if(data.suggestBooking){
+      const bookingCard = document.getElementById('dietitianBookingCard');
+      bookingCard.classList.remove('dietitian-highlight');
+      void bookingCard.offsetWidth; // restart the animation if it's already been triggered once
+      bookingCard.classList.add('dietitian-highlight');
+      setTimeout(()=> bookingCard.classList.remove('dietitian-highlight'), 3200);
+    }
+  } catch(e){
+    console.error('Dietitian chat error:', e);
+    renderDietitianChat(`<div class="dchat-msg error">Couldn't reach the AI just now${e.message ? ': ' + escapeHtml(e.message) : ''}. Your message was saved — try sending another, or ask again in a moment.</div>`);
+  } finally {
+    input.disabled = false;
+    sendBtn.disabled = false;
+    input.focus();
+  }
+}
+
+document.getElementById('dietitianChatSendBtn').onclick = sendDietitianMessage;
+document.getElementById('dietitianChatInput').addEventListener('keydown', (e)=>{
+  if(e.key === 'Enter' && !e.shiftKey){
+    e.preventDefault();
+    sendDietitianMessage();
+  }
+});
+
+document.querySelectorAll('#apptModeGroup button').forEach(btn=>{
+  btn.onclick = ()=>{
+    document.querySelectorAll('#apptModeGroup button').forEach(b=>b.classList.remove('sel'));
+    btn.classList.add('sel');
+  };
+});
+
+document.getElementById('apptRequestBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const statusEl = document.getElementById('apptRequestStatus');
+  const modeBtn = document.querySelector('#apptModeGroup button.sel');
+  const mode = modeBtn ? modeBtn.dataset.val : 'online';
+  const date = document.getElementById('apptDate').value;
+  const timeWindow = document.getElementById('apptTimeWindow').value;
+  const notes = document.getElementById('apptNotes').value.trim();
+
+  if(!date){
+    statusEl.textContent = 'Pick a preferred date first.';
+    return;
+  }
+
+  const btn = document.getElementById('apptRequestBtn');
+  btn.disabled = true;
+  statusEl.textContent = 'Sending…';
+
+  const { error } = await db.from('dietitian_appointments').insert({
+    user_id: currentUser.id, mode, preferred_date: date,
+    time_window: timeWindow, notes: notes || null,
+  });
+
+  btn.disabled = false;
+  if(error){
+    statusEl.textContent = "Couldn't send that request — try again.";
+    console.error('Could not create appointment request:', error.message);
+    return;
+  }
+
+  statusEl.textContent = 'Request sent — we\'ll confirm with you directly.';
+  document.getElementById('apptDate').value = '';
+  document.getElementById('apptNotes').value = '';
+  await loadAppointments();
+  setTimeout(()=>{ if(statusEl.textContent.startsWith('Request sent')) statusEl.textContent = ''; }, 4000);
+};
+
+async function loadAppointments(){
+  if(!currentUser) return;
+  const { data, error } = await db.from('dietitian_appointments').select('*')
+    .eq('user_id', currentUser.id).order('created_at', { ascending: false });
+  if(error){ console.error('Could not load appointment requests:', error.message); return; }
+  renderAppointmentsList(data || []);
+}
+
+function renderAppointmentsList(appts){
+  const listEl = document.getElementById('apptList');
+  const emptyEl = document.getElementById('apptEmpty');
+  if(appts.length === 0){
+    listEl.innerHTML = '';
+    emptyEl.style.display = 'block';
+    return;
+  }
+  emptyEl.style.display = 'none';
+
+  const STATUS_LABELS = { requested:'Requested', confirmed:'Confirmed', completed:'Completed', cancelled:'Cancelled' };
+  const MODE_LABELS = { online:'Online', offline:'In person' };
+
+  listEl.innerHTML = appts.map(a => `
+    <div class="appt-card" data-id="${a.id}">
+      <div class="appt-row">
+        <div>
+          <div class="appt-main">${MODE_LABELS[a.mode] || a.mode} · ${a.preferred_date} · ${escapeHtml(a.time_window)}</div>
+          <div class="appt-meta">Requested ${new Date(a.created_at).toLocaleDateString()}</div>
+        </div>
+        <span class="appt-status ${a.status}">${STATUS_LABELS[a.status] || a.status}</span>
+      </div>
+      ${a.notes ? `<div class="appt-notes">${escapeHtml(a.notes)}</div>` : ''}
+      ${a.status === 'requested' ? `<div style="text-align:right; margin-top:10px;"><button class="btn ghost small cancel-appt-btn">Cancel request</button></div>` : ''}
+    </div>
+  `).join('');
+
+  listEl.querySelectorAll('.appt-card').forEach(card=>{
+    const cancelBtn = card.querySelector('.cancel-appt-btn');
+    if(!cancelBtn) return;
+    cancelBtn.onclick = (e)=>{
+      showInlineConfirm(e.target, 'Cancel this appointment request?', async ()=>{
+        const { error } = await db.from('dietitian_appointments').delete().eq('id', card.dataset.id);
+        if(error) console.error('Could not cancel appointment request:', error.message);
+        await loadAppointments();
+      });
+    };
+  });
+}
 
 // ---------- Wearables mock ----------
 const WEARABLES = [
