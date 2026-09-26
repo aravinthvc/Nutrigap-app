@@ -942,6 +942,28 @@
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your transition</h3>
         <div id="outcomeBody"><div class="note">Add a few days to your diet log and a weigh-in or two to see your real trajectory here.</div></div>
       </div>
+
+      <div class="card" id="telegramCard" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Telegram AI agent (beta)</h3>
+        <div id="telegramLoading" class="note">Checking connection…</div>
+
+        <div id="telegramLinked" style="display:none;">
+          <div class="note">Connected as <strong id="telegramUsernameOut"></strong>. Message the bot any time — log a meal in plain English, ask "what's my gap today?", talk through your goals, or request a real appointment.</div>
+          <button class="btn ghost" id="unlinkTelegramBtn" style="margin-top:10px;">Disconnect</button>
+        </div>
+
+        <div id="telegramUnlinked" style="display:none;">
+          <div class="note">Connect Telegram to log meals, check your gap, chat with our AI first line, and request appointments — all from a chat, no app switching.</div>
+          <button class="btn" id="getTelegramCodeBtn" style="margin-top:10px;">Connect Telegram</button>
+          <div id="telegramCodeBox" style="display:none; margin-top:14px;">
+            <div class="note">Open Telegram and send this to the bot (expires in 10 minutes):</div>
+            <div style="font-size:22px; font-weight:600; letter-spacing:2px; margin:8px 0; font-family:monospace;" id="telegramCodeOut"></div>
+            <a id="telegramDeepLink" href="#" target="_blank" class="btn ghost" style="display:inline-block; text-decoration:none;">Open in Telegram</a>
+            <div class="note" style="margin-top:8px;">Or message the bot directly and send: <code id="telegramManualCmd" style="font-family:monospace;"></code></div>
+          </div>
+          <div id="telegramCodeHint" class="note" style="margin-top:8px;"></div>
+        </div>
+      </div>
     </section>
 
     <!-- DIET LOG -->
@@ -1555,6 +1577,7 @@ function showApp(user){
   loadFoods()
     .then(loadWeightLogs)
     .then(loadProfile)
+    .then(()=> loadTelegramLinkStatus())
     .then(()=> refreshDietLog())
     .then(()=> loadActivities())
     .then(()=>{
@@ -1706,6 +1729,7 @@ function showPanel(id){
   if(id === 'medical') loadSavedReports();
   if(id === 'visits') loadVisits();
   if(id === 'dietitian') loadDietitianSection();
+  if(id === 'profile') loadTelegramLinkStatus();
   if(id === 'activity') refreshActivityLog();
   if(id === 'wearables') renderRealWearables();
 }
@@ -1920,6 +1944,58 @@ async function loadProfile(){
   }
   recalc();
 }
+
+// ---------- Telegram AI agent linking ----------
+// Aravinth: once you've created the bot with @BotFather, set its real
+// @username here (without the @) so the "Open in Telegram" deep link
+// works. Until then, people can still copy the code and message the bot
+// manually with "/start CODE".
+const TELEGRAM_BOT_USERNAME = 'YourNutriGapBot';
+
+async function loadTelegramLinkStatus(){
+  if(!currentUser) return;
+  document.getElementById('telegramLoading').style.display = '';
+  document.getElementById('telegramLinked').style.display = 'none';
+  document.getElementById('telegramUnlinked').style.display = 'none';
+  const { data, error } = await db.from('telegram_links').select('telegram_username, linked_at').eq('user_id', currentUser.id).maybeSingle();
+  document.getElementById('telegramLoading').style.display = 'none';
+  if(error){ console.error('Could not check Telegram link status:', error.message); document.getElementById('telegramUnlinked').style.display = ''; return; }
+  if(data){
+    document.getElementById('telegramUsernameOut').textContent = data.telegram_username ? '@' + data.telegram_username : 'your Telegram account';
+    document.getElementById('telegramLinked').style.display = '';
+  } else {
+    document.getElementById('telegramUnlinked').style.display = '';
+    document.getElementById('telegramCodeBox').style.display = 'none';
+  }
+}
+
+document.getElementById('getTelegramCodeBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const hint = document.getElementById('telegramCodeHint');
+  hint.textContent = '';
+  const code = Array.from({length:6}, ()=> '23456789ABCDEFGHJKLMNPQRSTUVWXYZ'[Math.floor(Math.random()*32)]).join('');
+  const expiresAt = new Date(Date.now() + 10*60000).toISOString();
+  const { error } = await db.from('telegram_link_codes').insert({ code, user_id: currentUser.id, expires_at: expiresAt });
+  if(error){ hint.textContent = 'Could not generate a code: ' + error.message; return; }
+  document.getElementById('telegramCodeOut').textContent = code;
+  document.getElementById('telegramManualCmd').textContent = '/start ' + code;
+  const deepLink = document.getElementById('telegramDeepLink');
+  if(TELEGRAM_BOT_USERNAME && TELEGRAM_BOT_USERNAME !== 'YourNutriGapBot'){
+    deepLink.href = `https://t.me/${TELEGRAM_BOT_USERNAME}?start=${code}`;
+    deepLink.style.display = '';
+  } else {
+    deepLink.style.display = 'none';
+  }
+  document.getElementById('telegramCodeBox').style.display = '';
+  hint.textContent = 'Expires in 10 minutes — generate a new one if it runs out.';
+};
+
+document.getElementById('unlinkTelegramBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const { error } = await db.from('telegram_links').delete().eq('user_id', currentUser.id);
+  if(error){ console.error('Could not disconnect Telegram:', error.message); return; }
+  await loadTelegramLinkStatus();
+};
 
 // ---------- Expected outcome projection (fallback, before there's enough log history) ----------
 // 7,700 kcal is the commonly used approximation for 1 kg of body fat energy content.
