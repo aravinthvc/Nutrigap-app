@@ -3113,6 +3113,20 @@ function gapRow(def, consumed, target){
   </div>`;
 }
 
+// Used instead of gapRow for a macro nutrient that's unknown rather than
+// zero -- today's fiber total when the log includes a macro-only food
+// (see hasPartialMicronutrientData). Shows the nutrient without faking a
+// number or a progress bar for it.
+function gapRowUnknown(def){
+  return `<div class="gap-row">
+    <div class="heads">
+      <div><span class="label">${def.label}</span></div>
+      <span class="delta" style="color:var(--ink-faint)">Not tracked today</span>
+    </div>
+    <div class="track"><div class="fill" style="width:0%"></div></div>
+  </div>`;
+}
+
 function friendlyDate(dateStr){
   if(dateStr === TODAY_STR) return 'today';
   const d = new Date(dateStr + 'T00:00:00');
@@ -3123,19 +3137,23 @@ function renderGaps(){
   const t = totals();
   const tg = state.targets;
   if(!tg.kcal) return;
-  document.getElementById('macroGaps').innerHTML = macroDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
 
   // When today's log includes a macro-only food (see mapFoodRow/
-  // hasPartialMicronutrientData), the micronutrient totals above are an
-  // undercount, not a real reading -- showing per-nutrient bars or a tidy
-  // "short/over" summary from them would be guessing dressed up as fact.
-  // Replace that panel with a plain note instead of a false deficiency.
+  // hasPartialMicronutrientData), neither its fiber nor its vitamins/
+  // minerals were ever measured -- the BFB macro-only source data has no
+  // fiber column either, only calories/protein/carbs/fat. Treat fiber the
+  // same honest way as the micronutrient panel below: show it as unknown
+  // rather than quietly reading 0g as a real total.
   const hasPartialData = hasPartialMicronutrientData(currentEntries());
+  document.getElementById('macroGaps').innerHTML = macroDefs.map(d=>
+    (d.key === 'fiber' && hasPartialData) ? gapRowUnknown(d) : gapRow(d, t[d.key], tg[d.key])
+  ).join('');
+
   const microGapsEl = document.getElementById('microGaps');
   const summaryEl = document.getElementById('microSummaryLine');
   if(hasPartialData){
     microGapsEl.innerHTML = '';
-    summaryEl.textContent = "One or more of today's items only has verified calorie/macro data so far -- skipping vitamin/mineral gaps today rather than guessing.";
+    summaryEl.textContent = "One or more of today's items only has verified calorie/protein/carb/fat data so far -- skipping fiber and vitamin/mineral gaps today rather than guessing.";
   } else {
     microGapsEl.innerHTML = microDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
     const microStatuses = microDefs.map(d=>gapStatus(d, t[d.key], tg[d.key]));
@@ -3171,13 +3189,18 @@ document.getElementById('microToggleRow').onclick = ()=>{
 // prose, following the fixed template and situation taxonomy from the feature spec.
 
 const ALL_NUTRIENT_DEFS = [...macroDefs, ...microDefs];
+// Calories/protein/carbs/fat are verified for every food, macro-only
+// imports included -- but fiber isn't (see hasPartialMicronutrientData),
+// so it's left out of the "always known" set used when ranking partial days.
+const CORE_MACRO_DEFS = macroDefs.filter(d => d.key !== 'fiber');
 
 // Rank today's non-met gaps largest to smallest (by % off target), tagging direction (short/over).
-// Pass {includeMicros:false} (see hasPartialMicronutrientData) to rank macros only, when today's
-// log includes a macro-only food and showing a micronutrient "gap" would mean guessing.
+// Pass {includeMicros:false} (see hasPartialMicronutrientData) to rank the always-verified macros
+// only (kcal/protein/carbs/fat), when today's log includes a macro-only food and showing a fiber
+// or micronutrient "gap" would mean guessing.
 function rankGapsForInsight(t, tg, options){
   const includeMicros = !options || options.includeMicros !== false;
-  const defs = includeMicros ? ALL_NUTRIENT_DEFS : macroDefs;
+  const defs = includeMicros ? ALL_NUTRIENT_DEFS : CORE_MACRO_DEFS;
   return defs.map(def=>{
     const consumed = t[def.key] || 0;
     const target = tg[def.key] || 0;
@@ -3208,15 +3231,22 @@ async function computeRollingWindowPatterns(tg, endDateStr){
 
   const patterns = [];
   ALL_NUTRIENT_DEFS.forEach(def=>{
-    const isMicro = microDefs.includes(def);
+    // Fiber rides along with the micronutrients here, not with the other
+    // macros -- a macro-only food's source data has no fiber number
+    // either (see CORE_MACRO_DEFS/hasPartialMicronutrientData), so a day
+    // that included one never got a real fiber reading any more than it
+    // got a real vitamin/mineral one.
+    const skipWhenPartial = microDefs.includes(def) || def.key === 'fiber';
     let shortCount = 0, overCount = 0, shortLightlyLoggedCount = 0, countedDays = 0;
     last7.forEach(d=>{
       const dayEntries = byDate[d];
-      // A day that included a macro-only food never got a real micronutrient
-      // reading (see hasPartialMicronutrientData) -- leave it out of a
-      // micronutrient pattern entirely rather than let an undercount masquerade
-      // as "short again." Macro patterns (calories, protein, ...) are unaffected.
-      if(isMicro && hasPartialMicronutrientData(dayEntries)) return;
+      // A day that included a macro-only food never got a real fiber or
+      // micronutrient reading (see hasPartialMicronutrientData) -- leave
+      // it out of that nutrient's pattern entirely rather than let an
+      // undercount masquerade as "short again." Patterns for the
+      // always-verified macros (calories, protein, carbs, fat) are
+      // unaffected.
+      if(skipWhenPartial && hasPartialMicronutrientData(dayEntries)) return;
       countedDays++;
       const dayTotals = totals(dayEntries);
       const { cls } = gapStatus(def, dayTotals[def.key], tg[def.key]);
