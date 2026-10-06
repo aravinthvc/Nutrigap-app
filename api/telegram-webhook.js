@@ -22,6 +22,7 @@
 // treated as a dietitian-chat message -- that's the safe, designed-for-
 // open-ended-conversation default, never a guess dressed up as an action.
 
+const crypto = require('crypto');
 const db = require('../lib/supabase-rest');
 const nc = require('../lib/nutrition-core');
 const { callDietitianModel } = require('../lib/dietitian-agent');
@@ -32,12 +33,46 @@ const MEAL_VALUES = ['breakfast', 'lunch', 'dinner', 'snack'];
 
 // ---------- Telegram I/O ----------
 
-async function sendMessage(chatId, text) {
+// `keyboard`, when given, is an array of rows of {text, callback_data} --
+// Telegram renders it as tappable inline buttons under the message. Used
+// by the self-serve onboarding flow below for anything with a fixed set
+// of valid answers (sex, activity level, goal, ...), so those come back
+// as an exact value rather than something free text would have to parse.
+async function sendMessage(chatId, text, keyboard) {
+  const body = { chat_id: chatId, text, disable_web_page_preview: true };
+  if (keyboard) body.reply_markup = { inline_keyboard: keyboard };
   await fetch(TELEGRAM_API + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ chat_id: chatId, text, disable_web_page_preview: true }),
+    body: JSON.stringify(body),
   });
+}
+
+// Dismisses the little loading spinner Telegram shows on the tapped
+// button -- cosmetic, but leaving it out makes every button tap look like
+// it did nothing for a moment. Best-effort: never worth failing a reply
+// over.
+async function answerCallbackQuery(id) {
+  try {
+    await fetch(TELEGRAM_API + '/answerCallbackQuery', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ callback_query_id: id }),
+    });
+  } catch (e) { console.error('answerCallbackQuery failed:', e.message); }
+}
+
+// Strips the buttons off a message once it's been answered, so a stale
+// tap on an old question can't be replayed. Best-effort -- editing can
+// fail (e.g. the message is too old), and that's fine to ignore.
+async function clearKeyboard(chatId, messageId) {
+  try {
+    await fetch(TELEGRAM_API + '/editMessageReplyMarkup', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId, reply_markup: { inline_keyboard: [] } }),
+    });
+  } catch (e) { /* best-effort only */ }
 }
 
 // ---------- Conversation log (short-term memory + audit trail) ----------
@@ -69,13 +104,18 @@ async function recentContext(userId, limit) {
 
 // ---------- Account linking ----------
 
-async function findLinkedUser(chatId) {
+// Returns the full telegram_links row (user_id, onboarding_state, source)
+// for this chat, or null if the chat has never been linked at all -- not
+// to be confused with onboarding_state being null, which just means
+// there's no *onboarding* in progress (either it finished, or this link
+// came from the website's code flow and never needed it).
+async function findLink(chatId) {
   const rows = await db.select('telegram_links', {
-    columns: 'user_id',
+    columns: 'user_id,onboarding_state,source',
     filters: ['chat_id=eq.' + encodeURIComponent(String(chatId))],
     limit: 1,
   });
-  return rows && rows[0] ? rows[0].user_id : null;
+  return rows && rows[0] ? rows[0] : null;
 }
 
 async function handleLinking(chatId, text, from) {
@@ -84,9 +124,11 @@ async function handleLinking(chatId, text, from) {
 
   if (!code) {
     await sendMessage(chatId,
-      "Hi! I'm the NutriGap AI agent -- I'm not linked to an account yet.\n\n" +
-      'To connect me: open NutriGap on the website → Profile tab → "Connect Telegram", ' +
-      'get a one-time code, then send it to me here (or send "/start CODE").'
+      "Hi! I'm the NutriGap AI agent. This chat isn't set up yet -- two ways to fix that:",
+      [
+        [{ text: '🚀 Get started -- no account needed', callback_data: 'ob:begin' }],
+        [{ text: '🔗 I already have a NutriGap account', callback_data: 'ob:have_account' }],
+      ]
     );
     return;
   }
@@ -113,6 +155,7 @@ async function handleLinking(chatId, text, from) {
   await db.insert('telegram_links', [{
     chat_id: String(chatId), user_id: row.user_id,
     telegram_username: (from && (from.username || from.first_name)) || null,
+    source: 'website', onboarding_state: null,
   }], { returning: false });
   await db.update('telegram_link_codes', ['code=eq.' + encodeURIComponent(row.code)], { used_at: new Date().toISOString() });
 
@@ -125,6 +168,270 @@ async function handleLinking(chatId, text, from) {
     '• "my appointments" to see what\'s upcoming\n\n' +
     'Send /help any time to see this again, or /unlink to disconnect this chat.'
   );
+}
+
+// ---------- Self-serve onboarding (acquisition: no prior account) ----------
+//
+// Triggered by the "🚀 Get started" button on a cold /start. Creates a
+// real Supabase Auth user right away (via the Admin API -- see
+// lib/supabase-rest.js) under a synthetic, never-mailed address, so every
+// table keyed by user_id (profiles, diet_entries, ...) just works exactly
+// as it does for a website signup. Then walks through the same fields the
+// Profile tab collects, one at a time, and writes a real `profiles` row
+// at the end. Optionally "claims" the account with a real email so it's
+// also usable from the website -- see claimEmail() below.
+//
+// State lives in telegram_links.onboarding_state (jsonb) so it survives
+// between these stateless serverless calls: {step, answers}. step is one
+// of the ONBOARDING_FIELDS keys while onboarding is in progress, and the
+// column is set back to null once finalizeOnboarding() runs.
+
+const SEX_OPTIONS = [{ label: 'Male', value: 'male' }, { label: 'Female', value: 'female' }];
+const LIFE_STAGE_OPTIONS = [
+  { label: 'None of these', value: 'none' },
+  { label: 'Pregnant', value: 'pregnant' },
+  { label: 'Breastfeeding', value: 'lactating' },
+];
+const FRAME_OPTIONS = [
+  { label: 'Small', value: 'small' }, { label: 'Medium', value: 'medium' }, { label: 'Large', value: 'large' },
+];
+const ACTIVITY_OPTIONS = [
+  { label: 'Sedentary', value: '1.2' }, { label: 'Light', value: '1.375' }, { label: 'Moderate', value: '1.55' },
+  { label: 'Active', value: '1.725' }, { label: 'Very active', value: '1.9' },
+];
+const GOAL_OPTIONS = [
+  { label: 'Lose fat', value: 'lose' }, { label: 'Maintain', value: 'maintain' },
+  { label: 'Build muscle', value: 'gain' }, { label: 'Manage a condition', value: 'manage' },
+];
+
+// Same shape the website's segmented controls / number fields collect on
+// the Profile tab (see saveProfile() in index.html) -- kept in this order
+// so computeTargets() has everything it needs by the last required field.
+const ONBOARDING_FIELDS = {
+  name: {
+    kind: 'text',
+    prompt: () => "First things first -- what should I call you?",
+    parse: (t) => { const v = t.trim().slice(0, 60); return v ? v : null; },
+    next: () => 'age',
+  },
+  age: {
+    kind: 'text',
+    prompt: (a) => `Nice to meet you, ${a.name}! How old are you?`,
+    parse: (t) => { const n = parseInt(t.trim(), 10); return (Number.isFinite(n) && n >= 10 && n <= 100) ? n : null; },
+    invalidHint: 'Just a number between 10 and 100.',
+    next: () => 'sex',
+  },
+  sex: {
+    kind: 'buttons', options: SEX_OPTIONS,
+    prompt: () => 'Sex? This affects how I calculate your targets.',
+    next: (a) => a.sex === 'female' ? 'life_stage' : 'height',
+  },
+  life_stage: {
+    kind: 'buttons', options: LIFE_STAGE_OPTIONS,
+    prompt: () => 'Are you currently pregnant or breastfeeding? A few of your targets change if so.',
+    next: () => 'height',
+  },
+  height: {
+    kind: 'text',
+    prompt: () => 'Height in cm?',
+    parse: (t) => { const n = parseFloat(t.trim()); return (Number.isFinite(n) && n >= 100 && n <= 250) ? n : null; },
+    invalidHint: 'A number in cm, between 100 and 250 (e.g. 170).',
+    next: () => 'weight',
+  },
+  weight: {
+    kind: 'text',
+    prompt: () => 'Weight in kg?',
+    parse: (t) => { const n = parseFloat(t.trim()); return (Number.isFinite(n) && n >= 25 && n <= 300) ? n : null; },
+    invalidHint: 'A number in kg, between 25 and 300 (e.g. 68).',
+    next: () => 'frame',
+  },
+  frame: {
+    kind: 'buttons', options: FRAME_OPTIONS,
+    prompt: () => "Body frame -- wrist/joint size relative to your height?",
+    next: () => 'activity',
+  },
+  activity: {
+    kind: 'buttons', options: ACTIVITY_OPTIONS,
+    prompt: () => 'How active is a typical day for you?',
+    next: () => 'goal',
+  },
+  goal: {
+    kind: 'buttons', options: GOAL_OPTIONS,
+    prompt: () => "What's your main health goal right now?",
+    next: () => 'email',
+  },
+  email: {
+    kind: 'text',
+    prompt: () => 'Last thing -- want the website too (charts, meal boxes, medical report review)? Send your email and I\'ll set that up, or reply "skip" to stay on Telegram for now.',
+    parse: (t) => t.trim(),
+    next: () => null,
+  },
+};
+
+function isValidEmail(e) { return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e); }
+
+async function askOnboardingStep(chatId, state) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { onboarding_state: state });
+  const field = ONBOARDING_FIELDS[state.step];
+  const text = field.prompt(state.answers);
+  const keyboard = field.kind === 'buttons'
+    ? field.options.map(o => [{ text: o.label, callback_data: `ob:${state.step}:${o.value}` }])
+    : null;
+  await sendMessage(chatId, text, keyboard);
+}
+
+async function createSelfServeAccount(chatId, from) {
+  const syntheticEmail = `tg-${chatId}-${crypto.randomBytes(4).toString('hex')}@telegram.invalid`;
+  const throwawayPassword = crypto.randomBytes(12).toString('hex');
+  let authUser;
+  try {
+    authUser = await db.authAdminCreateUser({
+      email: syntheticEmail, password: throwawayPassword, email_confirm: true,
+    });
+  } catch (e) {
+    console.error('Could not create self-serve account:', e.message);
+    return null;
+  }
+  const userId = authUser && authUser.id;
+  if (!userId) return null;
+  await db.insert('telegram_links', [{
+    chat_id: String(chatId), user_id: userId,
+    telegram_username: (from && (from.username || from.first_name)) || null,
+    source: 'telegram_selfserve',
+    onboarding_state: { step: 'name', answers: {} },
+  }], { returning: false });
+  return userId;
+}
+
+// Tries to attach a real email (+ a temporary password) to the synthetic
+// account so it's also usable from the website. Relies on Postgres/GoTrue's
+// unique constraint on email as the dedupe check -- if that email already
+// belongs to a real account, we hear about it as a 422/"already exists"
+// error rather than needing a separate lookup call, and we point the
+// person at the existing website-side linking flow instead of trying to
+// merge two accounts automatically.
+async function claimEmail(userId, email) {
+  if (!isValidEmail(email)) {
+    return "That didn't look like a valid email, so I've kept you on Telegram-only for now -- you can add one later from the website.";
+  }
+  const tempPassword = crypto.randomBytes(6).toString('hex');
+  try {
+    await db.authAdminUpdateUser(userId, { email, email_confirm: true, password: tempPassword });
+    return `Your web login: ${email} / temporary password ${tempPassword} -- sign in at the website and change it whenever you like.`;
+  } catch (e) {
+    if (e.status === 422 || /already.*(registered|exists)/i.test(e.message || '')) {
+      return `Looks like ${email} already has a NutriGap account -- I've kept this chat on its own profile for now. To link this chat to that account instead, open the website → Profile tab → "Connect Telegram" and send me the code it gives you.`;
+    }
+    console.error('Could not claim email for self-serve user:', e.message);
+    return "Couldn't save that email just now -- you can add it later from the website.";
+  }
+}
+
+async function finalizeOnboarding(chatId, userId, answers) {
+  const profilePayload = {
+    user_id: userId,
+    age: answers.age,
+    sex: answers.sex,
+    height_cm: answers.height,
+    weight_kg: answers.weight,
+    frame: answers.frame,
+    activity_level: parseFloat(answers.activity),
+    goal: answers.goal,
+    life_stage: answers.sex === 'female' ? (answers.life_stage || 'none') : 'none',
+  };
+  try {
+    await db.insert('profiles', [profilePayload], { returning: false });
+  } catch (e) {
+    console.error('Could not save onboarding profile:', e.message);
+    await sendMessage(chatId, "I hit a snag saving your profile -- try /start again in a moment, or finish setting up from the website instead.");
+    return;
+  }
+
+  try { await db.authAdminUpdateUser(userId, { user_metadata: { full_name: answers.name } }); }
+  catch (e) { console.error('Could not save display name:', e.message); }
+
+  const rawEmail = String(answers.email || '');
+  const wantsEmail = rawEmail && rawEmail.toLowerCase() !== 'skip';
+  const emailNote = wantsEmail ? await claimEmail(userId, rawEmail) : '';
+
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { onboarding_state: null });
+
+  const targets = nc.computeTargets(profilePayload);
+  const lines = [
+    `You're all set, ${answers.name}! Estimated daily target: ~${Math.round(targets.kcal)} kcal, ${targets.protein}g protein.`,
+  ];
+  if (emailNote) lines.push(emailNote);
+  lines.push('', HELP_TEXT);
+  await sendMessage(chatId, lines.join('\n'));
+}
+
+async function handleOnboardingText(chatId, userId, state, text) {
+  const field = ONBOARDING_FIELDS[state.step];
+  if (field.kind === 'buttons') {
+    await sendMessage(chatId, 'Tap one of the options above to answer this one.');
+    await askOnboardingStep(chatId, state);
+    return;
+  }
+  if (state.step === 'email') {
+    const answers = { ...state.answers, email: field.parse(text) };
+    await finalizeOnboarding(chatId, userId, answers);
+    return;
+  }
+  const value = field.parse(text);
+  if (value === null) {
+    await sendMessage(chatId, field.invalidHint || "I didn't catch that -- try again?");
+    return;
+  }
+  const answers = { ...state.answers, [state.step]: value };
+  const nextStep = field.next(answers);
+  if (!nextStep) { await finalizeOnboarding(chatId, userId, answers); return; }
+  await askOnboardingStep(chatId, { step: nextStep, answers });
+}
+
+async function handleOnboardingButton(chatId, userId, state, data) {
+  const parts = data.split(':');
+  const step = parts[1];
+  const value = parts.slice(2).join(':');
+  if (step !== state.step) {
+    // A tap on a stale/earlier question (already cleared or superseded) --
+    // just re-ask the current one rather than silently doing nothing.
+    await askOnboardingStep(chatId, state);
+    return;
+  }
+  const field = ONBOARDING_FIELDS[step];
+  if (!field.options.some(o => o.value === value)) { await askOnboardingStep(chatId, state); return; }
+  const answers = { ...state.answers, [step]: value };
+  const nextStep = field.next(answers);
+  if (!nextStep) { await finalizeOnboarding(chatId, userId, answers); return; }
+  await askOnboardingStep(chatId, { step: nextStep, answers });
+}
+
+async function handleCallbackQuery(cq) {
+  const chatId = cq.message && cq.message.chat && cq.message.chat.id;
+  const data = cq.data || '';
+  if (!chatId) return;
+  await answerCallbackQuery(cq.id);
+  if (cq.message && cq.message.message_id) await clearKeyboard(chatId, cq.message.message_id);
+
+  if (data === 'ob:begin') {
+    const existing = await findLink(chatId);
+    if (existing) { await sendMessage(chatId, "This chat's already set up -- send /help to see what I can do."); return; }
+    const userId = await createSelfServeAccount(chatId, cq.from);
+    if (!userId) { await sendMessage(chatId, "Something went wrong setting you up -- try again in a moment."); return; }
+    await askOnboardingStep(chatId, { step: 'name', answers: {} });
+    return;
+  }
+  if (data === 'ob:have_account') {
+    await sendMessage(chatId, 'No problem -- open NutriGap on the website → Profile tab → "Connect Telegram", get a one-time code, then send it to me here (or send "/start CODE").');
+    return;
+  }
+
+  const link = await findLink(chatId);
+  if (!link || !link.onboarding_state || !link.onboarding_state.step) {
+    await sendMessage(chatId, "That button doesn't apply anymore -- send /help to see what I can do.");
+    return;
+  }
+  await handleOnboardingButton(chatId, link.user_id, link.onboarding_state, data);
 }
 
 // ---------- Gap summary ----------
@@ -175,6 +482,21 @@ async function gapSummary(userId) {
 async function loadFoodCatalog() {
   const rows = await db.select('foods', { columns: 'id,name', order: 'name.asc' });
   return rows || [];
+}
+
+// Feeds Telegram's unmatched items into the same food_requests table the
+// website's "Can't find a food? Let us know" button writes to -- so a
+// miss here isn't just a dead end, it's a prioritizable backlog entry,
+// exactly like a website miss already is. Best-effort: never worth
+// failing or slowing down a meal-log reply over.
+async function recordFoodRequests(userId, queryTexts) {
+  const names = (queryTexts || []).map(t => String(t || '').trim()).filter(Boolean);
+  if (names.length === 0) return;
+  try {
+    await db.insert('food_requests', names.map(requested_name => ({ user_id: userId, requested_name })), { returning: false });
+  } catch (e) {
+    console.error('Could not record food request(s) from Telegram:', e.message);
+  }
 }
 
 async function extractMealItems(apiKey, text, catalog, mealHint) {
@@ -243,7 +565,8 @@ async function logMeal(userId, text, mealHint) {
   const matched = items.filter(it => it.name);
   const unmatched = items.filter(it => !it.name);
   if (matched.length === 0) {
-    return `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the food catalog yet. Try describing it differently, or it may not be added yet.`;
+    await recordFoodRequests(userId, unmatched.map(u => u.queryText));
+    return `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the food catalog yet -- I've flagged it for the team to add. Try describing it differently in the meantime, or it may just not be in there yet.`;
   }
 
   const nameToId = new Map(catalog.map(f => [f.name, f.id]));
@@ -257,7 +580,8 @@ async function logMeal(userId, text, mealHint) {
   const loggedLines = matched.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.name}`).join(', ');
   let reply = `Logged under ${resolvedMeal}: ${loggedLines}.`;
   if (unmatched.length > 0) {
-    reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the catalog yet.)`;
+    await recordFoodRequests(userId, unmatched.map(u => u.queryText));
+    reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the catalog yet, flagged for the team.)`;
   }
   reply += ' Ask "what\'s my gap today?" any time to see how that shifted things.';
   return reply;
@@ -454,6 +778,13 @@ module.exports = async function handler(req, res) {
   // bug into a storm of duplicate replies.
   try {
     const update = req.body || {};
+
+    if (update.callback_query) {
+      await handleCallbackQuery(update.callback_query);
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     const message = update.message;
     if (!message || typeof message.text !== 'string') {
       res.status(200).json({ ok: true });
@@ -463,10 +794,17 @@ module.exports = async function handler(req, res) {
     const text = message.text.trim();
     if (!text) { res.status(200).json({ ok: true }); return; }
 
-    let userId = await findLinkedUser(chatId);
+    const link = await findLink(chatId);
 
-    if (!userId) {
+    if (!link) {
       await handleLinking(chatId, text, message.from);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    const userId = link.user_id;
+
+    if (link.onboarding_state && link.onboarding_state.step) {
+      await handleOnboardingText(chatId, userId, link.onboarding_state, text);
       res.status(200).json({ ok: true });
       return;
     }
