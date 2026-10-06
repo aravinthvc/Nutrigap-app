@@ -3,5 +3,8 @@
     "api/*.js": {
       "maxDuration": 300
     }
-  }
+  },
+  "crons": [
+    { "path": "/api/telegram-cron-nudge", "schedule": "30 14 * * *" }
+  ]
 }
