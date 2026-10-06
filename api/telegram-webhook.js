@@ -451,12 +451,15 @@ async function loadEntriesForDate(userId, dateStr) {
   return (rows || []).map(row => ({ ...nc.mapFoodRow(row.foods || {}), servings: row.servings, meal: row.meal }));
 }
 
-function formatGapSummary(t, tg, dateLabel) {
+function formatGapSummary(t, tg, dateLabel, hasPartialData) {
   if (!tg.kcal) return "You haven't finished setting up your profile yet -- add your age, sex, height and weight on the website (Profile tab) first, then I can work out your targets.";
-  const ranked = nc.rankGapsForInsight(t, tg);
+  const ranked = nc.rankGapsForInsight(t, tg, { includeMicros: !hasPartialData });
   const kcalLine = `Calories: ${Math.round(t.kcal)} / ${Math.round(tg.kcal)} kcal`;
+  const partialNote = hasPartialData
+    ? "\n\n(One or more of today's items only has verified calorie/protein/carb/fat data so far -- skipping fiber and vitamin/mineral gaps today rather than guessing.)"
+    : '';
   if (ranked.length === 0) {
-    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.`;
+    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.${partialNote}`;
   }
   const top = ranked.slice(0, 5).map(g => {
     if (g.isLimit) return `• ${g.label}: ${g.consumed}${g.unit} (limit ${g.target}${g.unit}) — over`;
@@ -464,7 +467,7 @@ function formatGapSummary(t, tg, dateLabel) {
     const amt = Math.abs(g.target - g.consumed);
     return `• ${g.label}: ${g.consumed}${g.unit} / ${g.target}${g.unit} — ${Math.round(amt * 10) / 10}${g.unit} ${verb}`;
   }).join('\n');
-  return `${dateLabel}'s log — ${kcalLine}\n\nBiggest gaps:\n${top}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.`;
+  return `${dateLabel}'s log — ${kcalLine}\n\nBiggest gaps:\n${top}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.${partialNote}`;
 }
 
 async function gapSummary(userId) {
@@ -474,7 +477,7 @@ async function gapSummary(userId) {
   const entries = await loadEntriesForDate(userId, dateStr);
   if (entries.length === 0) return "You haven't logged anything today yet. Tell me what you've eaten and I'll get it started.";
   const t = nc.totals(entries);
-  return formatGapSummary(t, loaded.targets, 'Today');
+  return formatGapSummary(t, loaded.targets, 'Today', nc.hasPartialMicronutrientData(entries));
 }
 
 // ---------- Meal logging ----------
@@ -605,8 +608,14 @@ async function buildDietitianContext(userId) {
   const dateStr = nc.istDateStr(new Date());
   const entries = await loadEntriesForDate(userId, dateStr);
   const t = nc.totals(entries);
-  const rankedGaps = nc.rankGapsForInsight(t, loaded.targets);
-  return { goal: loaded.profile.goal, targets: loaded.targets, rankedGaps };
+  const hasPartialData = nc.hasPartialMicronutrientData(entries);
+  // Deliberately omit fiber and micronutrient gaps from what the
+  // dietitian model sees when today's log includes a macro-only food --
+  // it can only reference what's in rankedGaps, so this is what stops it
+  // from confidently discussing a fiber/vitamin/mineral "deficiency"
+  // that's really just an unlogged unknown.
+  const rankedGaps = nc.rankGapsForInsight(t, loaded.targets, { includeMicros: !hasPartialData });
+  return { goal: loaded.profile.goal, targets: loaded.targets, rankedGaps, hasPartialData };
 }
 
 async function dietitianChat(userId, text) {
