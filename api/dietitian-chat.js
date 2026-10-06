@@ -3,12 +3,20 @@
 // The "Dietitian" tab's AI first line. This runs on Vercel's server, same as
 // api/insights.js — the Claude API key never reaches the browser.
 //
-// The actual system prompt and Anthropic call now live in
-// lib/dietitian-agent.js, shared with api/telegram-webhook.js's Telegram AI
-// agent, so the website chat and the Telegram chat are always working from
-// the exact same rules and personality rather than two copies that could
-// quietly drift apart.
-
+// What this assistant is and isn't: it's a first-line intake and planning
+// helper for BFB's panel of human dietitians — not a dietitian itself, and
+// it has no ability to actually confirm, schedule, reschedule, or cancel an
+// appointment. The real appointment request is created by the frontend's own
+// form (a plain insert into dietitian_appointments) when the person submits
+// it — this endpoint can only ever point them toward that form and set
+// suggestBooking:true so the frontend can highlight it; it must never claim
+// to have booked, confirmed, or scheduled anything itself.
+//
+// The actual system prompt and Anthropic call live in lib/dietitian-agent.js,
+// shared with api/telegram-webhook.js, so the website and Telegram never
+// drift onto two different prompts (this file used to keep its own inline
+// copy -- that's what caused the website side to miss the "partial data,
+// don't guess micronutrient gaps" instruction until this fix).
 const { callDietitianModel } = require('../lib/dietitian-agent');
 
 module.exports = async function handler(req, res) {
@@ -46,17 +54,20 @@ module.exports = async function handler(req, res) {
     return;
   }
 
+  const ctx = context && typeof context === 'object' ? context : {};
   const anthropicMessages = recentMessages.map(m => ({ role: m.role, content: m.content }));
 
   try {
-    const result = await callDietitianModel({
+    const { reply, suggestBooking } = await callDietitianModel({
       apiKey,
       messages: anthropicMessages,
-      context,
+      context: ctx,
       channel: 'web',
     });
-    res.status(200).json(result);
+    res.status(200).json({ reply, suggestBooking });
   } catch (e) {
-    res.status(e.userMessage ? 502 : 500).json({ error: e.userMessage || e.message });
+    // callDietitianModel sets .userMessage on the errors it wants shown
+    // as-is; fall back to its raw message for anything unexpected.
+    res.status(502).json({ error: e.userMessage || e.message });
   }
 };
