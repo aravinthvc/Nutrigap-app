@@ -1950,7 +1950,7 @@ async function loadProfile(){
 // @username here (without the @) so the "Open in Telegram" deep link
 // works. Until then, people can still copy the code and message the bot
 // manually with "/start CODE".
-const TELEGRAM_BOT_USERNAME = 'NutriGap_Bot';
+const TELEGRAM_BOT_USERNAME = 'YourNutriGapBot';
 
 async function loadTelegramLinkStatus(){
   if(!currentUser) return;
@@ -2455,8 +2455,24 @@ function mapFoodRow(row){
     vitA: row.vit_a, vitE: row.vit_e, vitK: row.vit_k,
     folate: row.folate, vitB6: row.vit_b6,
     magnesium: row.magnesium, zinc: row.zinc, potassium: row.potassium,
-    sodium: row.sodium, selenium: row.selenium
+    sodium: row.sodium, selenium: row.selenium,
+    // Mirrors lib/nutrition-core.js's mapFoodRow: a food can have verified
+    // macros but no verified micronutrients yet (see
+    // menu_import_macro_only_batch1.sql). Those rows store NULL, not 0, for
+    // every vitamin/mineral column -- microComplete lets the gap display
+    // and the AI tell "genuinely zero of this nutrient today" apart from
+    // "we don't actually know yet," instead of quietly treating the two
+    // the same way the totals() sum below unavoidably would.
+    microComplete: row.micronutrients_complete !== false
   };
+}
+
+// True if any of today's logged entries only has macro data (see
+// microComplete above) -- when that's the case, today's micronutrient
+// totals are an undercount, not a real reading, so callers should suppress
+// micronutrient gap claims for the day rather than show a false deficiency.
+function hasPartialMicronutrientData(entries){
+  return (entries || []).some(e => e.microComplete === false);
 }
 
 async function loadFoods(){
@@ -3108,25 +3124,37 @@ function renderGaps(){
   const tg = state.targets;
   if(!tg.kcal) return;
   document.getElementById('macroGaps').innerHTML = macroDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
-  document.getElementById('microGaps').innerHTML = microDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
 
-  const microStatuses = microDefs.map(d=>gapStatus(d, t[d.key], tg[d.key]));
-  const shortCount = microStatuses.filter(s=>s.cls==='short').length;
-  const overCount = microStatuses.filter(s=>s.cls==='over').length;
+  // When today's log includes a macro-only food (see mapFoodRow/
+  // hasPartialMicronutrientData), the micronutrient totals above are an
+  // undercount, not a real reading -- showing per-nutrient bars or a tidy
+  // "short/over" summary from them would be guessing dressed up as fact.
+  // Replace that panel with a plain note instead of a false deficiency.
+  const hasPartialData = hasPartialMicronutrientData(currentEntries());
+  const microGapsEl = document.getElementById('microGaps');
   const summaryEl = document.getElementById('microSummaryLine');
-  if(shortCount === 0 && overCount === 0){
-    summaryEl.textContent = 'All 15 micronutrients on target.';
+  if(hasPartialData){
+    microGapsEl.innerHTML = '';
+    summaryEl.textContent = "One or more of today's items only has verified calorie/macro data so far -- skipping vitamin/mineral gaps today rather than guessing.";
   } else {
-    const bits = [];
-    if(shortCount) bits.push(`${shortCount} short of target`);
-    if(overCount) bits.push(`${overCount} over${microDefs.some(d=>d.type==='limit')?' limit':''}`);
-    summaryEl.textContent = bits.join(' · ') + ' — see details below.';
+    microGapsEl.innerHTML = microDefs.map(d=>gapRow(d, t[d.key], tg[d.key])).join('');
+    const microStatuses = microDefs.map(d=>gapStatus(d, t[d.key], tg[d.key]));
+    const shortCount = microStatuses.filter(s=>s.cls==='short').length;
+    const overCount = microStatuses.filter(s=>s.cls==='over').length;
+    if(shortCount === 0 && overCount === 0){
+      summaryEl.textContent = 'All 15 micronutrients on target.';
+    } else {
+      const bits = [];
+      if(shortCount) bits.push(`${shortCount} short of target`);
+      if(overCount) bits.push(`${overCount} over${microDefs.some(d=>d.type==='limit')?' limit':''}`);
+      summaryEl.textContent = bits.join(' · ') + ' — see details below.';
+    }
   }
 
   const label = friendlyDate(state.currentDate);
   document.getElementById('gapsSubtitle').textContent = `What ${label === 'today' ? "today's" : label + "'s"} diet log covers against your daily target, macro and micro.`;
   document.getElementById('insightHeading').textContent = `What ${label === 'today' ? "today's" : label + "'s"} log suggests`;
-  renderInsight(t, tg);
+  renderInsight(t, tg, hasPartialData);
 }
 
 document.getElementById('microToggleRow').onclick = ()=>{
@@ -3145,8 +3173,12 @@ document.getElementById('microToggleRow').onclick = ()=>{
 const ALL_NUTRIENT_DEFS = [...macroDefs, ...microDefs];
 
 // Rank today's non-met gaps largest to smallest (by % off target), tagging direction (short/over).
-function rankGapsForInsight(t, tg){
-  return ALL_NUTRIENT_DEFS.map(def=>{
+// Pass {includeMicros:false} (see hasPartialMicronutrientData) to rank macros only, when today's
+// log includes a macro-only food and showing a micronutrient "gap" would mean guessing.
+function rankGapsForInsight(t, tg, options){
+  const includeMicros = !options || options.includeMicros !== false;
+  const defs = includeMicros ? ALL_NUTRIENT_DEFS : macroDefs;
+  return defs.map(def=>{
     const consumed = t[def.key] || 0;
     const target = tg[def.key] || 0;
     const { cls } = gapStatus(def, consumed, target);
@@ -3176,15 +3208,24 @@ async function computeRollingWindowPatterns(tg, endDateStr){
 
   const patterns = [];
   ALL_NUTRIENT_DEFS.forEach(def=>{
-    let shortCount = 0, overCount = 0, shortLightlyLoggedCount = 0;
+    const isMicro = microDefs.includes(def);
+    let shortCount = 0, overCount = 0, shortLightlyLoggedCount = 0, countedDays = 0;
     last7.forEach(d=>{
-      const dayTotals = totals(byDate[d]);
+      const dayEntries = byDate[d];
+      // A day that included a macro-only food never got a real micronutrient
+      // reading (see hasPartialMicronutrientData) -- leave it out of a
+      // micronutrient pattern entirely rather than let an undercount masquerade
+      // as "short again." Macro patterns (calories, protein, ...) are unaffected.
+      if(isMicro && hasPartialMicronutrientData(dayEntries)) return;
+      countedDays++;
+      const dayTotals = totals(dayEntries);
       const { cls } = gapStatus(def, dayTotals[def.key], tg[def.key]);
       const lightlyLogged = tg.kcal ? (dayTotals.kcal / tg.kcal) < 0.5 : false;
       if(cls === 'short'){ shortCount++; if(lightlyLogged) shortLightlyLoggedCount++; }
       if(cls === 'over'){ overCount++; }
     });
-    const of = last7.length;
+    const of = countedDays;
+    if(of === 0) return;
     if(shortCount >= 4){
       patterns.push({ label: def.label, direction: 'short', count: shortCount, of, possiblyUnderlogged: shortLightlyLoggedCount >= Math.ceil(shortCount / 2) });
     }
@@ -3196,7 +3237,7 @@ async function computeRollingWindowPatterns(tg, endDateStr){
 }
 
 // ---------- Live AI insight (calls Claude via our serverless function) ----------
-async function renderInsight(t, tg){
+async function renderInsight(t, tg, hasPartialData){
   const insightEl = document.getElementById('insightText');
   if(currentEntries().length===0){
     insightEl.textContent = 'Add some food to your log to see an analysis here.';
@@ -3208,7 +3249,10 @@ async function renderInsight(t, tg){
 
   const goal = getSel('goalGroup');
   const dateLabel = friendlyDate(state.currentDate);
-  const rankedGaps = rankGapsForInsight(t, tg);
+  // Leave micronutrients out of what the AI sees at all (rather than
+  // telling it to ignore them) when today's log has macro-only data --
+  // see hasPartialMicronutrientData.
+  const rankedGaps = rankGapsForInsight(t, tg, { includeMicros: !hasPartialData });
   const remainingKcal = Math.round((tg.kcal || 0) - (t.kcal || 0));
 
   try{
@@ -3223,6 +3267,7 @@ async function renderInsight(t, tg){
         remainingKcal,
         rankedGaps,
         patterns,
+        hasPartialData,
         foodNames: FOODS.map(f=>f.name)
       })
     });
@@ -5217,8 +5262,10 @@ async function buildDietitianContext(){
   if(tg && tg.kcal) {
     ctx.targets = tg;
     const t = totals();
-    const rankedGaps = rankGapsForInsight(t, tg);
+    const hasPartialData = hasPartialMicronutrientData(currentEntries());
+    const rankedGaps = rankGapsForInsight(t, tg, { includeMicros: !hasPartialData });
     if(rankedGaps.length) ctx.rankedGaps = rankedGaps;
+    if(hasPartialData) ctx.hasPartialData = true; // lib/dietitian-agent.js adds the matching caveat instruction
     try{
       const patterns = await computeRollingWindowPatterns(tg, state.currentDate);
       if(patterns.length) ctx.patterns = patterns;
