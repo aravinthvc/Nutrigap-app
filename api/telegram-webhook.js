@@ -16,6 +16,7 @@
 //
 // What it can do, once someone's linked their account (see the linking
 // flow below): log a meal in plain English, answer "what's my gap today",
+// suggest BFB meal-box ideas to close that gap ("what should I eat?"),
 // have the same AI-first-line dietitian conversation as the website's
 // Dietitian tab (continuing the same shared thread), and request/list/
 // cancel a real appointment. Anything it's not confident routing gets
@@ -451,15 +452,12 @@ async function loadEntriesForDate(userId, dateStr) {
   return (rows || []).map(row => ({ ...nc.mapFoodRow(row.foods || {}), servings: row.servings, meal: row.meal }));
 }
 
-function formatGapSummary(t, tg, dateLabel, hasPartialData) {
+function formatGapSummary(t, tg, dateLabel) {
   if (!tg.kcal) return "You haven't finished setting up your profile yet -- add your age, sex, height and weight on the website (Profile tab) first, then I can work out your targets.";
-  const ranked = nc.rankGapsForInsight(t, tg, { includeMicros: !hasPartialData });
+  const ranked = nc.rankGapsForInsight(t, tg);
   const kcalLine = `Calories: ${Math.round(t.kcal)} / ${Math.round(tg.kcal)} kcal`;
-  const partialNote = hasPartialData
-    ? "\n\n(One or more of today's items only has verified calorie/protein/carb/fat data so far -- skipping fiber and vitamin/mineral gaps today rather than guessing.)"
-    : '';
   if (ranked.length === 0) {
-    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.${partialNote}`;
+    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.`;
   }
   const top = ranked.slice(0, 5).map(g => {
     if (g.isLimit) return `• ${g.label}: ${g.consumed}${g.unit} (limit ${g.target}${g.unit}) — over`;
@@ -467,7 +465,7 @@ function formatGapSummary(t, tg, dateLabel, hasPartialData) {
     const amt = Math.abs(g.target - g.consumed);
     return `• ${g.label}: ${g.consumed}${g.unit} / ${g.target}${g.unit} — ${Math.round(amt * 10) / 10}${g.unit} ${verb}`;
   }).join('\n');
-  return `${dateLabel}'s log — ${kcalLine}\n\nBiggest gaps:\n${top}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.${partialNote}`;
+  return `${dateLabel}'s log — ${kcalLine}\n\nBiggest gaps:\n${top}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.`;
 }
 
 async function gapSummary(userId) {
@@ -477,7 +475,94 @@ async function gapSummary(userId) {
   const entries = await loadEntriesForDate(userId, dateStr);
   if (entries.length === 0) return "You haven't logged anything today yet. Tell me what you've eaten and I'll get it started.";
   const t = nc.totals(entries);
-  return formatGapSummary(t, loaded.targets, 'Today', nc.hasPartialMicronutrientData(entries));
+  return formatGapSummary(t, loaded.targets, 'Today');
+}
+
+// ---------- Meal-box ideas (gap-bridging suggestions from BFB's menu) ----------
+// meal_box_items is a deliberately separate catalog from foods -- BFB's
+// ~1,200-dish subscription menu, never merged into the personal diet-log
+// catalog (that's what caused the earlier macro-only-import detour: the
+// menu has real data-quality issues and nowhere near the completeness
+// foods assumes). This only ever suggests IDEAS, never logs anything, and
+// mirrors the website's Meal Box "Best for today's gap" mode via the
+// shared scoring in lib/nutrition-core.js so the two channels never
+// recommend differently for the same numbers.
+
+async function loadMealBoxItems() {
+  const rows = await db.select('meal_box_items', { limit: 2000 });
+  return rows || [];
+}
+
+async function loadFoodsFull() {
+  const rows = await db.select('foods');
+  return (rows || []).map(nc.mapFoodRow);
+}
+
+function formatMealBoxDish(d) {
+  const bits = [];
+  if (Number.isFinite(d.kcal)) bits.push(`${Math.round(d.kcal)} kcal`);
+  if (Number.isFinite(d.protein)) bits.push(`${d.protein}g protein`);
+  if (Number.isFinite(d.carbs)) bits.push(`${d.carbs}g carbs`);
+  if (Number.isFinite(d.fat)) bits.push(`${d.fat}g fat`);
+  const tag = d.meal_type ? ` (${d.meal_type}${d.meal_course ? ', ' + d.meal_course : ''})` : '';
+  return `• ${d.name}${tag} — ${bits.join(', ')}`;
+}
+
+async function mealIdeas(userId) {
+  const loaded = await loadTargets(userId);
+  if (!loaded) return "You haven't finished setting up your profile yet -- add your age, sex, height and weight on the website (Profile tab) first, then I can work out your targets.";
+  const dateStr = nc.istDateStr(new Date());
+  const entries = await loadEntriesForDate(userId, dateStr);
+  const t = nc.totals(entries);
+  const tg = loaded.targets;
+
+  const remaining = {
+    kcal: Math.max(0, tg.kcal - t.kcal),
+    protein: Math.max(0, tg.protein - t.protein),
+    carbs: Math.max(0, tg.carbs - t.carbs),
+    fat: Math.max(0, tg.fat - t.fat),
+  };
+  if (remaining.kcal <= 0) {
+    return "You've already met (or gone over) today's calorie target based on your log -- no meal-box suggestions for the rest of today.";
+  }
+
+  const items = await loadMealBoxItems();
+  const ranked = nc.rankMealBoxForGap(remaining, items);
+  const top = ranked.slice(0, 3);
+
+  const rankedGaps = nc.rankGapsForInsight(t, tg);
+  const topGap = rankedGaps[0];
+  const topGapNotCoverable = !!topGap && !nc.MEALBOX_COVERED_GAP_LABELS.includes(topGap.label);
+
+  const lines = [];
+  if (top.length > 0) {
+    lines.push(`Best BFB meal-box ideas for what's left of today (${Math.round(remaining.kcal)} kcal, ${Math.round(remaining.protein)}g protein, ${Math.round(remaining.carbs)}g carbs, ${Math.round(remaining.fat)}g fat remaining):`);
+    lines.push(top.map(formatMealBoxDish).join('\n'));
+  } else {
+    lines.push("No meal-box dishes fit what's left of today's targets right now.");
+  }
+
+  // Meal-box dishes only carry calories/protein/carbs/fat -- when the real
+  // biggest gap is fiber or a micronutrient, say so plainly and point at
+  // real foods for that specific nutrient instead of staying silent about
+  // the blind spot or, worse, implying a meal-box dish covers it.
+  if (top.length === 0 || topGapNotCoverable) {
+    const foods = await loadFoodsFull();
+    const fallback = nc.pickFoodFallbackForGap(t, tg, foods, rankedGaps);
+    if (fallback && fallback.top.length > 0) {
+      const { spotlightGap, spotlightDef, remainingAll, top: foodTop } = fallback;
+      if (topGapNotCoverable) {
+        lines.push(`\nRight now your biggest real gap is ${spotlightGap.label} -- meal-box dishes only carry calories, protein, carbs and fat, so they can't show whether one would help with that.`);
+      }
+      lines.push(`Top individual foods for your ${spotlightGap.label.toLowerCase()} gap:`);
+      lines.push(foodTop.map(f => {
+        const pct = Math.round(((f[spotlightDef.key] || 0) / (remainingAll[spotlightDef.key] || 1)) * 100);
+        return `• ${f.name} — covers ${pct}% of it, ${Math.round(f.kcal)} kcal/serving`;
+      }).join('\n'));
+    }
+  }
+
+  return lines.join('\n');
 }
 
 // ---------- Meal logging ----------
@@ -608,14 +693,8 @@ async function buildDietitianContext(userId) {
   const dateStr = nc.istDateStr(new Date());
   const entries = await loadEntriesForDate(userId, dateStr);
   const t = nc.totals(entries);
-  const hasPartialData = nc.hasPartialMicronutrientData(entries);
-  // Deliberately omit fiber and micronutrient gaps from what the
-  // dietitian model sees when today's log includes a macro-only food --
-  // it can only reference what's in rankedGaps, so this is what stops it
-  // from confidently discussing a fiber/vitamin/mineral "deficiency"
-  // that's really just an unlogged unknown.
-  const rankedGaps = nc.rankGapsForInsight(t, loaded.targets, { includeMicros: !hasPartialData });
-  return { goal: loaded.profile.goal, targets: loaded.targets, rankedGaps, hasPartialData };
+  const rankedGaps = nc.rankGapsForInsight(t, loaded.targets);
+  return { goal: loaded.profile.goal, targets: loaded.targets, rankedGaps };
 }
 
 async function dietitianChat(userId, text) {
@@ -728,6 +807,7 @@ async function classifyIntent(apiKey, text, context) {
 Choose exactly one "intent":
 - "log_meal" -- they're describing food they ate (or are about to eat) that should be logged.
 - "gap_summary" -- they're asking about their nutrition gap, targets, or how today's log looks.
+- "meal_ideas" -- they're asking what to eat, for meal/food suggestions, or how to close their nutrition gap (e.g. "what should I eat?", "give me some meal ideas", "what can I eat to hit my protein target?"). Not the same as gap_summary -- that's asking what today's numbers look like, this is asking what to DO about it.
 - "appointment" -- anything about booking, requesting, listing, or cancelling a consultation with a dietitian. Also set "appointmentAction" to "book", "list", or "cancel".
 - "help" -- asking what the bot can do.
 - "unlink" -- asking to disconnect/unlink their account.
@@ -755,7 +835,7 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
     const start = cleaned.indexOf('{'), end = cleaned.lastIndexOf('}');
     if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
     const parsed = JSON.parse(cleaned);
-    const allowed = ['log_meal', 'gap_summary', 'appointment', 'help', 'unlink', 'dietitian_chat'];
+    const allowed = ['log_meal', 'gap_summary', 'meal_ideas', 'appointment', 'help', 'unlink', 'dietitian_chat'];
     return {
       intent: allowed.includes(parsed.intent) ? parsed.intent : 'dietitian_chat',
       appointmentAction: ['book', 'list', 'cancel'].includes(parsed.appointmentAction) ? parsed.appointmentAction : 'book',
@@ -769,6 +849,7 @@ const HELP_TEXT =
   "Here's what I can do:\n\n" +
   '• Tell me what you ate ("2 chapathis with palak matar for lunch") and I\'ll log it\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
+  '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
   '• "book an online appointment Tuesday evening" to request a real consultation\n' +
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
@@ -840,6 +921,14 @@ module.exports = async function handler(req, res) {
       res.status(200).json({ ok: true });
       return;
     }
+    if (lower === '/meals' || lower === '/ideas') {
+      const reply = await mealIdeas(userId);
+      await logMessage(userId, chatId, 'in', text, 'meal_ideas');
+      await logMessage(userId, chatId, 'out', reply, 'meal_ideas');
+      await sendMessage(chatId, reply);
+      res.status(200).json({ ok: true });
+      return;
+    }
     if (lower === '/appointments') {
       const reply = await listAppointments(userId);
       await logMessage(userId, chatId, 'in', text, 'appointment');
@@ -862,6 +951,8 @@ module.exports = async function handler(req, res) {
       reply = "You're disconnected. Send /start with a fresh code from the website any time to reconnect.";
     } else if (intent === 'gap_summary') {
       reply = await gapSummary(userId);
+    } else if (intent === 'meal_ideas') {
+      reply = await mealIdeas(userId);
     } else if (intent === 'log_meal') {
       reply = await logMeal(userId, text, null);
     } else if (intent === 'appointment') {
