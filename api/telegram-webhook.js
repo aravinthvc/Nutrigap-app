@@ -34,19 +34,51 @@ const MEAL_VALUES = ['breakfast', 'lunch', 'dinner', 'snack'];
 
 // ---------- Telegram I/O ----------
 
+// The persistent quick-action menu -- a Telegram "reply keyboard", not an
+// inline one: it docks under the text box and stays visible across every
+// later message (not just the one it was sent with), until replaced or
+// removed. Sent once after linking/onboarding and on /start or /help, so a
+// returning user always has the main actions one tap away instead of
+// having to remember exact phrasing or slash commands. Button taps arrive
+// back as ordinary text messages (see BUTTON_TO_COMMAND in the main
+// handler below) -- free-text still works exactly as before this existed.
+const MAIN_MENU_KEYBOARD = [
+  ['📊 My gap', '🍽 Meal ideas'],
+  ['📝 Log a meal', '📅 Appointments'],
+  ['❓ Help'],
+];
+
 // `keyboard`, when given, is an array of rows of {text, callback_data} --
 // Telegram renders it as tappable inline buttons under the message. Used
 // by the self-serve onboarding flow below for anything with a fixed set
 // of valid answers (sex, activity level, goal, ...), so those come back
 // as an exact value rather than something free text would have to parse.
-async function sendMessage(chatId, text, keyboard) {
+// `opts.menu: true` attaches the persistent MAIN_MENU_KEYBOARD instead --
+// mutually exclusive with `keyboard` (Telegram only renders one
+// reply_markup per message; callers never need both on the same message).
+async function sendMessage(chatId, text, keyboard, opts) {
   const body = { chat_id: chatId, text, disable_web_page_preview: true };
   if (keyboard) body.reply_markup = { inline_keyboard: keyboard };
+  else if (opts && opts.menu) body.reply_markup = { keyboard: MAIN_MENU_KEYBOARD, resize_keyboard: true };
   await fetch(TELEGRAM_API + '/sendMessage', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   });
+}
+
+// Shows Telegram's "NutriGap_Bot is typing..." indicator for a few
+// seconds. Fired once before any reply that might involve an AI call (a
+// couple of seconds of silence otherwise reads as broken, not slow) --
+// best-effort, never worth failing or slowing a reply down over.
+async function sendTyping(chatId) {
+  try {
+    await fetch(TELEGRAM_API + '/sendChatAction', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
+    });
+  } catch (e) { /* best-effort only */ }
 }
 
 // Dismisses the little loading spinner Telegram shows on the tapped
@@ -112,7 +144,7 @@ async function recentContext(userId, limit) {
 // came from the website's code flow and never needed it).
 async function findLink(chatId) {
   const rows = await db.select('telegram_links', {
-    columns: 'user_id,onboarding_state,source',
+    columns: 'user_id,onboarding_state,source,nudges_enabled',
     filters: ['chat_id=eq.' + encodeURIComponent(String(chatId))],
     limit: 1,
   });
@@ -167,7 +199,8 @@ async function handleLinking(chatId, text, from) {
     '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
     '• "book an online appointment Tuesday evening" to request a real consultation\n' +
     '• "my appointments" to see what\'s upcoming\n\n' +
-    'Send /help any time to see this again, or /unlink to disconnect this chat.'
+    'Use the buttons below any time, or send /help to see this again. /unlink disconnects this chat.',
+    null, { menu: true }
   );
 }
 
@@ -363,7 +396,7 @@ async function finalizeOnboarding(chatId, userId, answers) {
   ];
   if (emailNote) lines.push(emailNote);
   lines.push('', HELP_TEXT);
-  await sendMessage(chatId, lines.join('\n'));
+  await sendMessage(chatId, lines.join('\n'), null, { menu: true });
 }
 
 async function handleOnboardingText(chatId, userId, state, text) {
@@ -446,26 +479,54 @@ async function loadTargets(userId) {
 
 async function loadEntriesForDate(userId, dateStr) {
   const rows = await db.select('diet_entries', {
-    columns: 'id,servings,meal,entry_date,foods(*)',
+    columns: 'id,servings,meal,entry_date,food_id,meal_box_item_id,foods(*),meal_box_items(*)',
     filters: ['user_id=eq.' + userId, 'entry_date=eq.' + dateStr],
   });
-  return (rows || []).map(row => ({ ...nc.mapFoodRow(row.foods || {}), servings: row.servings, meal: row.meal }));
+  return (rows || []).map(row => ({
+    ...(row.meal_box_item_id ? nc.mapMealBoxRow(row.meal_box_items || {}) : nc.mapFoodRow(row.foods || {})),
+    servings: row.servings, meal: row.meal,
+  }));
 }
 
-function formatGapSummary(t, tg, dateLabel) {
+// Macro gap keys (fiber counts as a macro here, matching macroDefs in
+// nutrition-core.js/index.html). kcal is excluded -- it's already shown on
+// its own line above the gap lists.
+const MACRO_GAP_KEYS = ['protein', 'carbs', 'fat', 'fiber'];
+
+function formatGapLine(g) {
+  if (g.isLimit) return `• ${g.label}: ${g.consumed}${g.unit} (limit ${g.target}${g.unit}) — over`;
+  const verb = g.direction === 'short' ? 'short' : 'over';
+  const amt = Math.abs(g.target - g.consumed);
+  return `• ${g.label}: ${g.consumed}${g.unit} / ${g.target}${g.unit} — ${Math.round(amt * 10) / 10}${g.unit} ${verb}`;
+}
+
+function formatGapSummary(t, tg, dateLabel, entries) {
   if (!tg.kcal) return "You haven't finished setting up your profile yet -- add your age, sex, height and weight on the website (Profile tab) first, then I can work out your targets.";
   const ranked = nc.rankGapsForInsight(t, tg);
   const kcalLine = `Calories: ${Math.round(t.kcal)} / ${Math.round(tg.kcal)} kcal`;
-  if (ranked.length === 0) {
-    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.`;
+  const partialCount = (entries || []).filter(e => e.isPartial).length;
+  const partialNote = partialCount > 0
+    ? `\n\n(${partialCount} BFB meal-box item${partialCount === 1 ? '' : 's'} logged ${dateLabel.toLowerCase()} -- tracked for calories/protein/carbs/fat only, so fiber/micronutrient numbers above may be a bit better than what was actually eaten.)`
+    : '';
+
+  // rankGapsForInsight ranks every off-target nutrient by % off target --
+  // left as one list, calcium/vitamin-type gaps (which tend to run at much
+  // higher % off) crowd out protein/carbs/fat/fiber even when those are
+  // meaningfully off too. So: always surface the macro gaps that exist,
+  // separately from a capped top-N of the micronutrient gaps, rather than
+  // letting them compete in one ranking.
+  const macroGaps = ranked.filter(g => MACRO_GAP_KEYS.includes(g.key));
+  const microGaps = ranked.filter(g => !MACRO_GAP_KEYS.includes(g.key)).slice(0, 4);
+
+  if (macroGaps.length === 0 && microGaps.length === 0) {
+    return `${dateLabel}'s log — ${kcalLine}. Everything else is on target. Nicely balanced day.${partialNote}`;
   }
-  const top = ranked.slice(0, 5).map(g => {
-    if (g.isLimit) return `• ${g.label}: ${g.consumed}${g.unit} (limit ${g.target}${g.unit}) — over`;
-    const verb = g.direction === 'short' ? 'short' : 'over';
-    const amt = Math.abs(g.target - g.consumed);
-    return `• ${g.label}: ${g.consumed}${g.unit} / ${g.target}${g.unit} — ${Math.round(amt * 10) / 10}${g.unit} ${verb}`;
-  }).join('\n');
-  return `${dateLabel}'s log — ${kcalLine}\n\nBiggest gaps:\n${top}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.`;
+
+  const sections = [];
+  if (macroGaps.length > 0) sections.push(`Macros:\n${macroGaps.map(formatGapLine).join('\n')}`);
+  if (microGaps.length > 0) sections.push(`Biggest micronutrient gaps:\n${microGaps.map(formatGapLine).join('\n')}`);
+
+  return `${dateLabel}'s log — ${kcalLine}\n\n${sections.join('\n\n')}\n\nAsk me anything about these, or say what you're planning to eat next and I can tell you how it'd help.${partialNote}`;
 }
 
 async function gapSummary(userId) {
@@ -475,7 +536,7 @@ async function gapSummary(userId) {
   const entries = await loadEntriesForDate(userId, dateStr);
   if (entries.length === 0) return "You haven't logged anything today yet. Tell me what you've eaten and I'll get it started.";
   const t = nc.totals(entries);
-  return formatGapSummary(t, loaded.targets, 'Today');
+  return formatGapSummary(t, loaded.targets, 'Today', entries);
 }
 
 // ---------- Meal-box ideas (gap-bridging suggestions from BFB's menu) ----------
@@ -572,6 +633,30 @@ async function loadFoodCatalog() {
   return rows || [];
 }
 
+// Used only as a fallback inside logMeal(), after an item fails to match the
+// real `foods` catalog -- see the comment above that fallback for why.
+async function loadMealBoxCatalog() {
+  const rows = await db.select('meal_box_items', { columns: 'id,name', limit: 2000 });
+  return rows || [];
+}
+
+// Simple case-insensitive exact/substring match -- meal-box dish names are
+// specific enough (e.g. "Lentil soup", "Chicken green salad") that this is
+// enough to find a real match without a second AI call per message. Picks
+// the shortest-name match among substring hits as the most specific one.
+function matchMealBoxItem(queryText, mealBoxCatalog) {
+  const q = String(queryText || '').trim().toLowerCase();
+  if (!q) return null;
+  const exact = mealBoxCatalog.find(m => m.name.toLowerCase() === q);
+  if (exact) return exact;
+  const contains = mealBoxCatalog.filter(m => {
+    const name = m.name.toLowerCase();
+    return name.includes(q) || q.includes(name);
+  });
+  if (contains.length > 0) return contains.sort((a, b) => a.name.length - b.name.length)[0];
+  return null;
+}
+
 // Feeds Telegram's unmatched items into the same food_requests table the
 // website's "Can't find a food? Let us know" button writes to -- so a
 // miss here isn't just a dead end, it's a prioritizable backlog entry,
@@ -651,8 +736,25 @@ async function logMeal(userId, text, mealHint) {
   }
 
   const matched = items.filter(it => it.name);
-  const unmatched = items.filter(it => !it.name);
-  if (matched.length === 0) {
+  let unmatched = items.filter(it => !it.name);
+
+  // Before giving up on something the real foods catalog has no match for,
+  // check whether it's actually a BFB meal-box dish -- real, just macro-only.
+  // Logged as its own partial kind of diet_entries row (meal_box_item_id,
+  // not food_id) rather than either passing it off as a complete food or
+  // silently dropping it to the food_requests backlog. See mapMealBoxRow()
+  // in lib/nutrition-core.js for how this stays honest in the gap math.
+  const mealBoxCatalog = unmatched.length > 0 ? await loadMealBoxCatalog() : [];
+  const mealBoxMatches = [];
+  const stillUnmatched = [];
+  unmatched.forEach(u => {
+    const hit = matchMealBoxItem(u.queryText, mealBoxCatalog);
+    if (hit) mealBoxMatches.push({ ...u, mealBoxId: hit.id, mealBoxName: hit.name });
+    else stillUnmatched.push(u);
+  });
+  unmatched = stillUnmatched;
+
+  if (matched.length === 0 && mealBoxMatches.length === 0) {
     await recordFoodRequests(userId, unmatched.map(u => u.queryText));
     return `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the food catalog yet -- I've flagged it for the team to add. Try describing it differently in the meantime, or it may just not be in there yet.`;
   }
@@ -663,10 +765,18 @@ async function logMeal(userId, text, mealHint) {
   const rows = matched.map(it => ({
     user_id: userId, entry_date: entryDate, food_id: nameToId.get(it.name), servings: it.servings, meal: resolvedMeal,
   }));
-  await db.insert('diet_entries', rows, { returning: false });
+  const mealBoxRows = mealBoxMatches.map(it => ({
+    user_id: userId, entry_date: entryDate, meal_box_item_id: it.mealBoxId, servings: it.servings, meal: resolvedMeal,
+  }));
+  if (rows.length > 0) await db.insert('diet_entries', rows, { returning: false });
+  if (mealBoxRows.length > 0) await db.insert('diet_entries', mealBoxRows, { returning: false });
 
-  const loggedLines = matched.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.name}`).join(', ');
-  let reply = `Logged under ${resolvedMeal}: ${loggedLines}.`;
+  const loggedLines = matched.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.name}`);
+  const mealBoxLines = mealBoxMatches.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.mealBoxName} (BFB box)`);
+  let reply = `Logged under ${resolvedMeal}: ${[...loggedLines, ...mealBoxLines].join(', ')}.`;
+  if (mealBoxMatches.length > 0) {
+    reply += ` Note: the BFB meal-box item${mealBoxMatches.length === 1 ? '' : 's'} only track${mealBoxMatches.length === 1 ? 's' : ''} calories/protein/carbs/fat -- fiber and micronutrients aren't counted for ${mealBoxMatches.length === 1 ? 'it' : 'those'}.`;
+  }
   if (unmatched.length > 0) {
     await recordFoodRequests(userId, unmatched.map(u => u.queryText));
     reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the catalog yet, flagged for the team.)`;
@@ -847,13 +957,27 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
+  '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
   '• Tell me what you ate ("2 chapathis with palak matar for lunch") and I\'ll log it\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
   '• "book an online appointment Tuesday evening" to request a real consultation\n' +
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
+  '• /nudges to turn daily check-in reminders on or off\n' +
   '• /unlink to disconnect this chat from your NutriGap account';
+
+// Button taps from MAIN_MENU_KEYBOARD arrive back as plain text messages --
+// this maps the ones that are just shortcuts for an existing slash command
+// onto that command's text, so one block of logic handles both. "📝 Log a
+// meal" isn't in here: it has no equivalent command, it's just a prompt
+// (see the dedicated check for it in the main handler).
+const BUTTON_TO_COMMAND = {
+  '📊 My gap': '/gap',
+  '🍽 Meal ideas': '/meals',
+  '📅 Appointments': '/appointments',
+  '❓ Help': '/help',
+};
 
 // ---------- Main handler ----------
 
@@ -899,17 +1023,47 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // A tap on the persistent menu's "📝 Log a meal" button isn't an action
+    // in itself -- there's nothing to log yet -- so it just prompts, same
+    // as it would if someone asked "how do I log food?".
+    if (text === '📝 Log a meal') {
+      await sendMessage(chatId, 'Tell me what you ate, like "2 chapathis and dal for lunch", and I\'ll log it and match it against the catalog.');
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     // Deterministic slash commands first -- faster, cheaper, and more
-    // reliable than routing them through the AI classifier.
-    const lower = text.toLowerCase();
+    // reliable than routing them through the AI classifier. Menu-button
+    // taps that mirror a command (see BUTTON_TO_COMMAND) are normalized
+    // onto that command's text here so one block handles both; `text`
+    // itself is left alone for logging/display.
+    const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
     if (lower === '/start' || lower === '/help') {
-      await sendMessage(chatId, HELP_TEXT);
+      await sendMessage(chatId, HELP_TEXT, null, { menu: true });
       res.status(200).json({ ok: true });
       return;
     }
     if (lower === '/unlink') {
       await db.remove('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId)), 'user_id=eq.' + userId]);
       await sendMessage(chatId, "You're disconnected. Send /start with a fresh code from the website any time to reconnect.");
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/nudges') {
+      const enabled = link.nudges_enabled !== false;
+      await sendMessage(chatId, `Daily check-in reminders are currently ${enabled ? 'ON' : 'OFF'}. Send "/nudges off" or "/nudges on" to change.`);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/nudges off') {
+      await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId)), 'user_id=eq.' + userId], { nudges_enabled: false });
+      await sendMessage(chatId, "Okay, no more daily check-in reminders. Send \"/nudges on\" any time to turn them back on.");
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/nudges on') {
+      await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId)), 'user_id=eq.' + userId], { nudges_enabled: true });
+      await sendMessage(chatId, "Daily check-in reminders are back on.");
       res.status(200).json({ ok: true });
       return;
     }
@@ -938,6 +1092,11 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // Everything past here involves at least one AI call (classification,
+    // and usually a second for extraction/chat/booking) -- show typing so
+    // the gap before a reply reads as "thinking", not broken.
+    await sendTyping(chatId);
+
     const apiKey = process.env.ANTHROPIC_API_KEY;
     const context = await recentContext(userId, 8);
     const { intent, appointmentAction } = await classifyIntent(apiKey, text, context);
@@ -964,7 +1123,7 @@ module.exports = async function handler(req, res) {
     }
 
     await logMessage(userId, chatId, 'out', reply, intent);
-    await sendMessage(chatId, reply);
+    await sendMessage(chatId, reply, null, { menu: intent === 'help' });
     res.status(200).json({ ok: true });
   } catch (e) {
     console.error('telegram-webhook error:', e);
