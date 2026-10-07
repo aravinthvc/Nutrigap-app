@@ -2,35 +2,31 @@
 description: NutriGap / NutriGap_Bot build status — what's shipped, what's pending, what the user needs to do next. Read before resuming work on this project.
 ---
 
-# NutriGap status (as of 2026-10-06)
+# NutriGap status (as of 2026-10-07)
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
-## Newest this session: Telegram UX overhaul (`add_telegram_nudges.sql`, `vercel.json`, `api/telegram-cron-nudge.js`)
+## Newest this session: Telegram `/gap` summary now always shows macro gaps too
 
-Aravinth's feedback: the Telegram journey "needs to be more intuitive, easy and smooth." He picked three priorities (over making suggestions tappable / confirming the meal bucket, which are still open — see Pending): command menu + quick-action buttons, responsiveness polish, and daily nudges/reminders.
+Aravinth reported (screenshot of a real `/gap` reply): the "Biggest gaps" list only ever showed micronutrients (Iron, Vitamin A, Vitamin D, Vitamin E, Vitamin B12), never protein/carbs/fat/fiber, even on a day where calories were clearly short too.
 
-**1. Persistent quick-action menu + command routing.** New `MAIN_MENU_KEYBOARD` (a Telegram reply keyboard, not inline — docks under the text box and stays visible across every later message): 📊 My gap / 🍽 Meal ideas / 📝 Log a meal / 📅 Appointments / ❓ Help. Sent after linking, after onboarding finishes, and on /start or /help. Button taps arrive back as plain text and are routed via `BUTTON_TO_COMMAND` onto the same deterministic code path as the matching slash command (no extra AI call) — "📝 Log a meal" has no command equivalent, it just prompts for what to type. Free text and existing slash commands are unchanged; this is additive.
+**Root cause:** `formatGapSummary()` in `api/telegram-webhook.js` took the top 5 nutrients from `rankGapsForInsight()` ranked purely by % off target. Micronutrient targets (vitamins especially) routinely show much larger percentage gaps than macros do, so macros were getting crowded out of the top 5 every time, even when meaningfully off target themselves — not a data bug, a display bug.
 
-**Telegram's own "/" command menu is a separate thing and still needs a one-time setup call** — `setMyCommands` isn't something a webhook request can do for itself, it's bot-level config. Aravinth needs to run this once (his own bot token, never shared in chat):
-```bash
-curl -s "https://api.telegram.org/bot<BOT_TOKEN>/setMyCommands" \
-  -H "Content-Type: application/json" \
-  -d '{"commands":[
-    {"command":"gap","description":"Today'"'"'s nutrition gap"},
-    {"command":"meals","description":"BFB meal-box ideas for today'"'"'s gap"},
-    {"command":"appointments","description":"Your dietitian appointments"},
-    {"command":"nudges","description":"Turn daily reminders on or off"},
-    {"command":"help","description":"What I can do"},
-    {"command":"unlink","description":"Disconnect this chat"}
-  ]}'
-```
+**Fix:** `formatGapSummary()` now splits `rankGapsForInsight()`'s output into two guaranteed sections instead of one blended top-5: a "Macros" section listing every off-target macro (protein/carbs/fat/fiber — kcal stays on its own summary line as before), and a "Biggest micronutrient gaps" section capped at the top 4 by % off target. Macros never get crowded out again; the micronutrient list is still capped so the message doesn't get unwieldy. Verified against the test harness (`test_telegram_webhook.js`, scenario 12b) and a standalone reconstruction of Aravinth's actual numbers — confirms protein/carbs/fat/fiber now appear whenever they're off target, independent of how big the vitamin percentages are that day.
 
-**2. Responsiveness polish.** New `sendTyping()` fires Telegram's "typing..." indicator right before any reply that involves an AI call (classify, and usually a second call for extraction/chat/booking) — a few seconds of silence otherwise reads as broken, not slow. Deterministic commands (DB-only, already fast) don't need it. Error-copy rewrite was considered and skipped — existing messages ("couldn't find X, flagged for the team", "just a number between 10 and 100") were judged already clear; not touched, to keep this change's risk surface small.
+No schema change, no new file — just `api/telegram-webhook.js` to redeploy (copy-paste into GitHub, same as any other code change). Website (`index.html`) was never affected by this bug — it already shows macro and micro gaps in two separate always-visible cards, not a truncated top-N list.
 
-**3. Daily check-in nudges (new file, new table columns, new cron job).** `telegram_links` gets `nudges_enabled` (default true) and `last_nudged_date`. New `api/telegram-cron-nudge.js`, triggered once daily by Vercel Cron at 20:00 IST (`vercel.json`'s `crons` entry — **merge this key into Aravinth's real vercel.json if one already exists in the repo; don't let this placeholder file overwrite it**). For every linked, fully-onboarded, nudges-enabled chat not already nudged today: skip if no complete profile yet (nothing honest to say); if zero diet_entries logged today, send a plain "haven't seen your log today" nudge; if logged but under 50% of calorie target, send a nudge naming the current biggest gap and pointing at meal ideas; if already reasonably logged, skip silently (never nagging someone who's on track). Every nudge message states how to turn it off, and `/nudges` / `/nudges on` / `/nudges off` work any time from the chat itself. **Fails closed**: refuses to run (500) if `CRON_SECRET` isn't set in Vercel env vars, and rejects (401) any request whose `Authorization: Bearer` header doesn't match it — this is the one piece of code in the whole app that messages people without them asking first, so it's deliberately locked down against being hit by anyone else. Aravinth needs to set `CRON_SECRET` to some random value in Vercel's env vars (Vercel sets the matching header automatically when it fires the cron job itself).
+## Telegram UX overhaul (shipped and fully deployed 2026-10-06/07)
 
-**Verified via test harness** (`test_telegram_cron_nudge.js`, new, scratchpad) — covers: no-log nudge, thin-log nudge (with correct biggest-gap naming), on-track skipped, already-nudged-today skipped (idempotency), mid-onboarding skipped, no-profile skipped, opted-out chat never even queried, auth rejected on missing/wrong secret, and a second same-day run sending nothing. `test_telegram_webhook.js` extended with scenarios for menu-button routing (confirms "📊 My gap" behaves exactly like `/gap`), the "📝 Log a meal" prompt, and `/nudges` status/on/off — all pass, alongside every pre-existing scenario (onboarding harness too).
+Aravinth's feedback: the Telegram journey "needs to be more intuitive, easy and smooth." He picked three priorities (over making suggestions tappable / confirming the meal bucket, which are still open — see Pending): command menu + quick-action buttons, responsiveness polish, and daily nudges/reminders. **All three confirmed live in production** — SQL migrations run, `CRON_SECRET` set in Vercel, and the Telegram "/" command menu confirmed working via screenshot in the real NutriGapBot chat.
+
+**1. Persistent quick-action menu + command routing.** `MAIN_MENU_KEYBOARD` (a Telegram reply keyboard, not inline — docks under the text box and stays visible across every later message): 📊 My gap / 🍽 Meal ideas / 📝 Log a meal / 📅 Appointments / ❓ Help. Sent after linking, after onboarding finishes, and on /start or /help. Button taps route via `BUTTON_TO_COMMAND` onto the same deterministic code path as the matching slash command (no extra AI call) — "📝 Log a meal" has no command equivalent, it just prompts for what to type.
+
+Telegram's own "/" command menu (`setMyCommands`) was a separate one-time bot-level config call — **done**, confirmed live via screenshot (`/gap`, `/meals`, `/appointments`, `/nudges`, `/help`, `/unlink` all showing with descriptions in the real chat).
+
+**2. Responsiveness polish.** `sendTyping()` fires Telegram's "typing..." indicator right before any reply that involves an AI call.
+
+**3. Daily check-in nudges.** `telegram_links.nudges_enabled` (default true) / `last_nudged_date`. `api/telegram-cron-nudge.js`, triggered once daily by Vercel Cron at 20:00 IST. Skips anyone mid-onboarding, without a complete profile, or already nudged today; sends a plain "haven't logged today" nudge if zero entries, or a biggest-gap-naming nudge if under 50% of calorie target; stays silent for anyone on track. Every nudge states how to turn it off; `/nudges` / `/nudges on` / `/nudges off` work any time. Fails closed without `CRON_SECRET`.
 
 ## Pre-existing data leak found and still needs cleanup: BFB dishes already inside `foods`
 
@@ -50,11 +46,11 @@ Note while investigating: BFB's own richest recipe source (`final-recipe-file.md
 
 `foods` is the clean, fully-verified personal diet-logging catalog (always-complete macro + micronutrient data). `meal_box_items` is BFB's ~1,200-dish subscription menu — separate table, macro-only (kcal/protein/carbs/fat), used for meal-idea suggestions AND honest partial logging (see below). This was Aravinth's explicit call after watching an attempt to import BFB dishes into `foods` turn into three rounds of schema fights — mixing a messy, macro-only subscription menu into a catalog that's always assumed complete data was the wrong model, not a solvable bug.
 
-## Honest logging of BFB meal-box dishes (`add_meal_box_logging.sql`)
+## Honest logging of BFB meal-box dishes (`add_meal_box_logging.sql` — confirmed run in production)
 
 The conundrum Aravinth raised: if the app recommends a BFB dish to close a gap, the customer reasonably expects to log it once eaten — but `meal_box_items` has no micronutrient data, so logging it as if it were a complete `foods` entry would silently understate/misstate the day's real micronutrient gap. Resolution, explicitly approved: keep `foods` exactly as strict as the architecture decision says (logging search only ever shows complete, verified entries) — don't widen that door again. Instead, add a distinct, honestly-labeled way to log a BFB dish as a BFB dish.
 
-**Schema** (`add_meal_box_logging.sql`, not yet run by Aravinth): `diet_entries.food_id` is now nullable; new nullable `diet_entries.meal_box_item_id` (FK to `meal_box_items`); a check constraint enforces exactly one of the two is ever set. No separate "source" flag needed — the app derives partial-vs-complete from which id column is populated. Verified end-to-end against a local Postgres built to match production's constraint shape.
+**Schema:** `diet_entries.food_id` is nullable; `diet_entries.meal_box_item_id` (FK to `meal_box_items`, nullable); a check constraint enforces exactly one of the two is ever set. No separate "source" flag needed — the app derives partial-vs-complete from which id column is populated.
 
 **Website (`index.html`):** `mealBoxCard()` (Meal Box tab, "Best for today's gap" mode) has a "Log this" button next to each suggested dish. Logs with `meal_box_item_id` set (not `food_id`), servings 1, current meal selection. `mapMealBoxRow()` maps a meal-box row the same shape as `mapFoodRow()` but with fiber/all 15 micronutrients explicitly `0` and `isPartial:true`. `refreshDietLog()` embeds both `foods(*)` and `meal_box_items(*)` and picks the right mapper per row. The diet log table tags each BFB-sourced row "BFB box"; `renderGaps()` shows a plain-language note above the macro gaps whenever any of today's entries are partial.
 
@@ -62,7 +58,7 @@ The conundrum Aravinth raised: if the app recommends a BFB dish to close a gap, 
 
 **Scope note:** the "Log this" button only exists in the Meal Box tab's gap-mode (where a dish is being actively suggested to close today's gap) — not general browse mode or a general meal-box search-to-log.
 
-## Earlier phase this session: "fix the menu gap, make the customer journey easier" — shipped, tested
+## Earlier phase: "fix the menu gap, make the customer journey easier" — shipped, tested
 
 Triggered by a real Telegram log attempt failing to match "Ragi semiya" in the catalog.
 
@@ -72,7 +68,7 @@ Triggered by a real Telegram log attempt failing to match "Ragi semiya" in the c
 
 **3. Telegram meal-box ideas.** Ported the website's Meal Box "gap mode" logic to Telegram ("what should I eat?" / `/meals`). Shared scoring logic lives in `lib/nutrition-core.js`.
 
-**Abandoned earlier this session, reverted cleanly:** an attempt to hand-vet and import 47 BFB dishes directly into `foods` as a "macro-only" tier. None of those 47 rows ever landed in `foods`. The `foods.micronutrients_complete` column added for that attempt is inert; `revert_micronutrients_complete_column.sql` drops it if wanted.
+**Abandoned earlier, reverted cleanly:** an attempt to hand-vet and import 47 BFB dishes directly into `foods` as a "macro-only" tier. None of those 47 rows ever landed in `foods`. The `foods.micronutrients_complete` column added for that attempt is inert; `revert_micronutrients_complete_column.sql` drops it if wanted.
 
 ## Pending / next up
 
@@ -84,10 +80,10 @@ Triggered by a real Telegram log attempt failing to match "Ragi semiya" in the c
 
 ## Deploy checklist
 
-1. Run `add_meal_box_logging.sql` and `add_telegram_nudges.sql` in the Supabase SQL editor (neither run yet).
-2. Deploy the updated `index.html`, `api/telegram-webhook.js`, `lib/nutrition-core.js`, plus the new `api/telegram-cron-nudge.js`, to Vercel.
-3. Merge `vercel.json`'s `crons` entry into the real project config (don't blindly overwrite if one already exists).
-4. Set a `CRON_SECRET` env var in Vercel (any random value) — the nudge cron refuses to run without it.
-5. Run the one-time `setMyCommands` curl command above (own bot token, not shared in chat) so Telegram's "/" menu shows the real commands.
-6. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above.
+1. ~~Run `add_meal_box_logging.sql` and `add_telegram_nudges.sql` in the Supabase SQL editor~~ — **done, confirmed.**
+2. **Redeploy `api/telegram-webhook.js`** to Vercel (today's macro-gap fix — the only file that changed this round).
+3. ~~Merge `vercel.json`'s `crons` entry into the real project config~~ — **done, confirmed.**
+4. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
+5. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
+6. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
 7. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
