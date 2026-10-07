@@ -31,6 +31,10 @@ const { callDietitianModel } = require('../lib/dietitian-agent');
 const TELEGRAM_API = 'https://api.telegram.org/bot' + process.env.TELEGRAM_BOT_TOKEN;
 const APPT_TIME_WINDOWS = ['Morning (9am-12pm)', 'Afternoon (12pm-4pm)', 'Evening (4pm-8pm)'];
 const MEAL_VALUES = ['breakfast', 'lunch', 'dinner', 'snack'];
+const MEAL_OPTIONS = [
+  { label: 'Breakfast', value: 'breakfast' }, { label: 'Lunch', value: 'lunch' },
+  { label: 'Dinner', value: 'dinner' }, { label: 'Snack', value: 'snack' },
+];
 
 // ---------- Telegram I/O ----------
 
@@ -144,7 +148,7 @@ async function recentContext(userId, limit) {
 // came from the website's code flow and never needed it).
 async function findLink(chatId) {
   const rows = await db.select('telegram_links', {
-    columns: 'user_id,onboarding_state,source,nudges_enabled',
+    columns: 'user_id,onboarding_state,pending_log,source,nudges_enabled',
     filters: ['chat_id=eq.' + encodeURIComponent(String(chatId))],
     limit: 1,
   });
@@ -461,11 +465,186 @@ async function handleCallbackQuery(cq) {
   }
 
   const link = await findLink(chatId);
-  if (!link || !link.onboarding_state || !link.onboarding_state.step) {
+  if (!link) {
+    await sendMessage(chatId, "This chat isn't set up yet -- send /start to get going.");
+    return;
+  }
+
+  if (data.startsWith('log:')) {
+    if (!link.pending_log || !link.pending_log.step) {
+      await sendMessage(chatId, "That button doesn't apply anymore -- tell me what you ate, or tap 📝 Log a meal to start again.");
+      return;
+    }
+    await handleLogButton(chatId, link.user_id, link.pending_log, data);
+    return;
+  }
+
+  if (!link.onboarding_state || !link.onboarding_state.step) {
     await sendMessage(chatId, "That button doesn't apply anymore -- send /help to see what I can do.");
     return;
   }
   await handleOnboardingButton(chatId, link.user_id, link.onboarding_state, data);
+}
+
+// ---------- Guided meal logging (meal + date confirmation) ----------
+//
+// Every meal log -- whether it starts from a free-text message ("2
+// chapathis for lunch") or the "📝 Log a meal" button -- goes through this
+// short guided flow before anything is saved: confirm which meal it's for,
+// confirm which date, then (if not already supplied up front) what was
+// eaten, or a photo. This replaces silently guessing the meal from time of
+// day and always assuming "today" -- someone logging a late breakfast, or
+// backfilling yesterday's dinner, gets it attributed correctly instead of
+// guessed at.
+//
+// State lives in telegram_links.pending_log (jsonb), the same pattern as
+// onboarding_state: {step, text, meal, entryDate}. step is one of
+// 'meal' | 'date' | 'custom_date' | 'items'. `text` holds the raw "what I
+// ate" message when it was already supplied up front (the free-text entry
+// point) -- in that case the flow skips straight to logging once meal and
+// date are confirmed, instead of asking a third time for what was eaten.
+
+async function setPendingLog(chatId, state) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_log: state });
+}
+
+async function clearPendingLog(chatId) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_log: null });
+}
+
+async function startMealLogFlow(chatId, text) {
+  const state = { step: 'meal', text: text || null, meal: null, entryDate: null };
+  await setPendingLog(chatId, state);
+  await sendMessage(chatId, 'Which meal is this for?', MEAL_OPTIONS.map(o => [{ text: o.label, callback_data: `log:meal:${o.value}` }]));
+}
+
+async function askLogDate(chatId, state) {
+  await setPendingLog(chatId, state);
+  await sendMessage(chatId, 'Which date?', [
+    [{ text: 'Today', callback_data: 'log:date:today' }, { text: 'Yesterday', callback_data: 'log:date:yesterday' }],
+    [{ text: '📅 Type a date', callback_data: 'log:date:custom' }],
+  ]);
+}
+
+async function askLogItems(chatId, state) {
+  await setPendingLog(chatId, state);
+  await sendMessage(chatId, 'What did you eat? Type it, or send a photo of the meal.');
+}
+
+async function reaskCurrentLogStep(chatId, state) {
+  if (state.step === 'date') { await askLogDate(chatId, state); return; }
+  await sendMessage(chatId, 'Which meal is this for?', MEAL_OPTIONS.map(o => [{ text: o.label, callback_data: `log:meal:${o.value}` }]));
+}
+
+// Accepts "2026-10-05", or a day+month like "5 Oct" / "Oct 5" / "5 October"
+// (assumed in the current year, rolled back a year if that would land in
+// the future -- typing "25 Dec" in January means last Dec 25, not next).
+// Deliberately rejects slash-style dates (e.g. "5/10") rather than guess
+// DD/MM vs MM/DD -- an Indian user typing day-first into a US-style parser
+// is exactly the kind of silent misread this flow exists to avoid. Also
+// rejects anything outside the last 90 days or in the future, since those
+// are almost always a typo rather than a real backfill.
+function dateLabelFor(dateStr) {
+  const todayIST = nc.istDateStr(new Date());
+  const yesterdayIST = nc.istDateStr(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  if (dateStr === todayIST) return 'today';
+  if (dateStr === yesterdayIST) return 'yesterday';
+  return dateStr;
+}
+
+function parseLoggedDate(text) {
+  const now = new Date();
+  const todayIST = nc.istDateStr(now);
+  const t = String(text || '').trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(t) ? t : null;
+  if (iso) return iso <= todayIST ? iso : null;
+
+  const year = now.getFullYear();
+  const parsed = new Date(t + ' ' + year + ' UTC');
+  if (Number.isNaN(parsed.getTime())) return null;
+  let candidate = nc.istDateStr(parsed);
+  if (candidate > todayIST) {
+    const lastYear = new Date(Date.UTC(year - 1, parsed.getUTCMonth(), parsed.getUTCDate()));
+    candidate = nc.istDateStr(lastYear);
+  }
+  const ninetyDaysAgo = nc.istDateStr(new Date(now.getTime() - 90 * 24 * 60 * 60 * 1000));
+  if (candidate < ninetyDaysAgo || candidate > todayIST) return null;
+  return candidate;
+}
+
+async function finishMealLog(chatId, userId, state) {
+  await clearPendingLog(chatId);
+  await sendTyping(chatId);
+  const reply = await logMeal(userId, state.text, state.meal, state.entryDate);
+  await logMessage(userId, chatId, 'out', reply, 'log_meal');
+  await sendMessage(chatId, reply);
+}
+
+async function proceedAfterDate(chatId, userId, state) {
+  // Free-text entry point already supplied what they ate -- no need to ask
+  // a third time, finish the log now that meal + date are confirmed.
+  if (state.text) { await finishMealLog(chatId, userId, state); return; }
+  await askLogItems(chatId, state);
+}
+
+async function handleLogButton(chatId, userId, state, data) {
+  const parts = data.split(':');
+  const kind = parts[1];
+  const value = parts.slice(2).join(':');
+
+  if (kind === 'meal') {
+    if (state.step !== 'meal' || !MEAL_VALUES.includes(value)) { await reaskCurrentLogStep(chatId, state); return; }
+    await askLogDate(chatId, { ...state, meal: value, step: 'date' });
+    return;
+  }
+  if (kind === 'date') {
+    if (state.step !== 'date') { await reaskCurrentLogStep(chatId, state); return; }
+    if (value === 'today' || value === 'yesterday') {
+      const entryDate = value === 'today' ? nc.istDateStr(new Date()) : nc.istDateStr(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      await proceedAfterDate(chatId, userId, { ...state, entryDate, step: 'items' });
+      return;
+    }
+    if (value === 'custom') {
+      await setPendingLog(chatId, { ...state, step: 'custom_date' });
+      await sendMessage(chatId, 'What date? Send it like "2026-10-05" or "5 Oct" (up to 90 days back, not in the future).');
+      return;
+    }
+  }
+  await reaskCurrentLogStep(chatId, state);
+}
+
+// A meal photo isn't analyzed yet (that's a separate, bigger piece of work
+// -- see the project status notes) -- rather than silently drop it or
+// pretend it was logged, it's saved for manual review and the person is
+// told plainly it won't count toward today's numbers, same honesty
+// principle as everywhere else in this app.
+async function savePhotoPlaceholder(chatId, userId, state, fileId) {
+  await clearPendingLog(chatId);
+  try {
+    await db.insert('meal_photo_logs', [{
+      user_id: userId, chat_id: String(chatId), meal: state.meal, entry_date: state.entryDate, telegram_file_id: fileId,
+    }], { returning: false });
+  } catch (e) {
+    console.error('Could not save meal photo log:', e.message);
+  }
+  await sendMessage(chatId,
+    `Got the photo — saved it against ${state.meal} (${dateLabelFor(state.entryDate)}), but I don't read meal photos yet, so it won't count toward your nutrient numbers. I've kept it for the team to review. For now, type what was in it and I'll log that properly, e.g. "2 chapathis and dal".`
+  );
+}
+
+// Lets someone escape the guided flow mid-way (tapping a different menu
+// button, or sending a recognized command) instead of getting trapped --
+// the half-finished log is just dropped, and whatever they sent is handled
+// normally from there.
+const LOG_FLOW_ESCAPE_COMMANDS = new Set([
+  '/start', '/help', '/gap', '/today', '/meals', '/ideas', '/appointments',
+  '/unlink', '/nudges', '/nudges on', '/nudges off', '/log',
+]);
+function isEscapeFromLogFlow(text) {
+  if (!text) return false;
+  if (text === '📝 Log a meal') return true;
+  const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
+  return LOG_FLOW_ESCAPE_COMMANDS.has(lower);
 }
 
 // ---------- Gap summary ----------
@@ -723,14 +902,20 @@ ${catalogList}`;
   };
 }
 
-async function logMeal(userId, text, mealHint) {
+// `meal` and `entryDate` are the values the person already confirmed via
+// the guided flow above (startMealLogFlow / handleLogButton) -- logMeal()
+// no longer guesses either one. extractMealItems() still asks the model to
+// notice a meal mentioned in the text itself, but that's now informational
+// only (useful if it ever disagrees enough to investigate); the confirmed
+// value always wins.
+async function logMeal(userId, text, meal, entryDate) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return "Something's misconfigured on the server side -- Aravinth's been notified.";
 
   const catalog = await loadFoodCatalog();
   if (catalog.length === 0) return "I couldn't reach the food catalog just now -- try again in a moment.";
 
-  const { items, meal } = await extractMealItems(apiKey, text, catalog, mealHint);
+  const { items } = await extractMealItems(apiKey, text, catalog, meal);
   if (items.length === 0) {
     return "I couldn't tell what you ate from that -- try naming the dish more directly, e.g. \"2 chapathis with palak matar for lunch\".";
   }
@@ -760,20 +945,19 @@ async function logMeal(userId, text, mealHint) {
   }
 
   const nameToId = new Map(catalog.map(f => [f.name, f.id]));
-  const resolvedMeal = meal || nc.defaultMealForHour(nc.istHour(new Date()));
-  const entryDate = nc.istDateStr(new Date());
+  const entryDateStr = entryDate || nc.istDateStr(new Date());
   const rows = matched.map(it => ({
-    user_id: userId, entry_date: entryDate, food_id: nameToId.get(it.name), servings: it.servings, meal: resolvedMeal,
+    user_id: userId, entry_date: entryDateStr, food_id: nameToId.get(it.name), servings: it.servings, meal,
   }));
   const mealBoxRows = mealBoxMatches.map(it => ({
-    user_id: userId, entry_date: entryDate, meal_box_item_id: it.mealBoxId, servings: it.servings, meal: resolvedMeal,
+    user_id: userId, entry_date: entryDateStr, meal_box_item_id: it.mealBoxId, servings: it.servings, meal,
   }));
   if (rows.length > 0) await db.insert('diet_entries', rows, { returning: false });
   if (mealBoxRows.length > 0) await db.insert('diet_entries', mealBoxRows, { returning: false });
 
   const loggedLines = matched.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.name}`);
   const mealBoxLines = mealBoxMatches.map(it => `${it.servings === 1 ? '' : it.servings + '× '}${it.mealBoxName} (BFB box)`);
-  let reply = `Logged under ${resolvedMeal}: ${[...loggedLines, ...mealBoxLines].join(', ')}.`;
+  let reply = `Logged under ${meal} (${dateLabelFor(entryDateStr)}): ${[...loggedLines, ...mealBoxLines].join(', ')}.`;
   if (mealBoxMatches.length > 0) {
     reply += ` Note: the BFB meal-box item${mealBoxMatches.length === 1 ? '' : 's'} only track${mealBoxMatches.length === 1 ? 's' : ''} calories/protein/carbs/fat -- fiber and micronutrients aren't counted for ${mealBoxMatches.length === 1 ? 'it' : 'those'}.`;
   }
@@ -958,7 +1142,7 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
   '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
-  '• Tell me what you ate ("2 chapathis with palak matar for lunch") and I\'ll log it\n' +
+  '• Tell me what you ate ("2 chapathis with palak matar for lunch"), or tap "📝 Log a meal" / send /log -- either way I\'ll ask which meal and which date, then log it (you can also send a photo when asked; I\'ll save it for the team to review, but it won\'t count toward your numbers yet -- I don\'t read meal photos)\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
@@ -970,8 +1154,9 @@ const HELP_TEXT =
 // Button taps from MAIN_MENU_KEYBOARD arrive back as plain text messages --
 // this maps the ones that are just shortcuts for an existing slash command
 // onto that command's text, so one block of logic handles both. "📝 Log a
-// meal" isn't in here: it has no equivalent command, it's just a prompt
-// (see the dedicated check for it in the main handler).
+// meal" isn't in here: it starts the guided logging flow directly (see the
+// dedicated check for it in the main handler), it doesn't map onto another
+// command's text.
 const BUTTON_TO_COMMAND = {
   '📊 My gap': '/gap',
   '🍽 Meal ideas': '/meals',
@@ -1000,13 +1185,14 @@ module.exports = async function handler(req, res) {
     }
 
     const message = update.message;
-    if (!message || typeof message.text !== 'string') {
+    const hasPhoto = !!(message && message.photo && message.photo.length);
+    if (!message || (typeof message.text !== 'string' && !hasPhoto)) {
       res.status(200).json({ ok: true });
       return;
     }
     const chatId = message.chat.id;
-    const text = message.text.trim();
-    if (!text) { res.status(200).json({ ok: true }); return; }
+    const text = typeof message.text === 'string' ? message.text.trim() : '';
+    if (!text && !hasPhoto) { res.status(200).json({ ok: true }); return; }
 
     const link = await findLink(chatId);
 
@@ -1023,11 +1209,59 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // A tap on the persistent menu's "📝 Log a meal" button isn't an action
-    // in itself -- there's nothing to log yet -- so it just prompts, same
-    // as it would if someone asked "how do I log food?".
-    if (text === '📝 Log a meal') {
-      await sendMessage(chatId, 'Tell me what you ate, like "2 chapathis and dal for lunch", and I\'ll log it and match it against the catalog.');
+    // Mid-way through the guided meal-logging flow (see "Guided meal
+    // logging" above) -- intercept before anything else, including the AI
+    // classifier, so a half-answered "which date?" doesn't get reinterpreted
+    // as a fresh message. A recognized command/menu-button still escapes
+    // the flow instead of getting trapped by it.
+    if (link.pending_log && link.pending_log.step) {
+      const state = link.pending_log;
+      if (isEscapeFromLogFlow(text)) {
+        await clearPendingLog(chatId);
+        // falls through to normal handling below with the original message
+      } else if (state.step === 'meal' || state.step === 'date') {
+        await sendMessage(chatId, 'Tap one of the buttons above to answer that one.');
+        await reaskCurrentLogStep(chatId, state);
+        res.status(200).json({ ok: true });
+        return;
+      } else if (state.step === 'custom_date') {
+        if (!text) {
+          await sendMessage(chatId, 'What date? Send it like "2026-10-05" or "5 Oct".');
+          res.status(200).json({ ok: true });
+          return;
+        }
+        const entryDate = parseLoggedDate(text);
+        if (!entryDate) {
+          await sendMessage(chatId, "I couldn't read that as a date -- try \"2026-10-05\" or \"5 Oct\" (up to 90 days back, not in the future).");
+          res.status(200).json({ ok: true });
+          return;
+        }
+        await proceedAfterDate(chatId, userId, { ...state, entryDate, step: 'items' });
+        res.status(200).json({ ok: true });
+        return;
+      } else if (state.step === 'items') {
+        if (hasPhoto) {
+          const fileId = message.photo[message.photo.length - 1].file_id;
+          await savePhotoPlaceholder(chatId, userId, state, fileId);
+          res.status(200).json({ ok: true });
+          return;
+        }
+        if (text) {
+          await logMessage(userId, chatId, 'in', text, 'log_meal');
+          await finishMealLog(chatId, userId, { ...state, text });
+          res.status(200).json({ ok: true });
+          return;
+        }
+        await sendMessage(chatId, 'Type what you ate, or send a photo of the meal.');
+        res.status(200).json({ ok: true });
+        return;
+      }
+    }
+
+    // A tap on the persistent menu's "📝 Log a meal" button (or /log) starts
+    // the guided flow directly -- see "Guided meal logging" above.
+    if (text === '📝 Log a meal' || text.toLowerCase() === '/log') {
+      await startMealLogFlow(chatId, null);
       res.status(200).json({ ok: true });
       return;
     }
@@ -1092,6 +1326,15 @@ module.exports = async function handler(req, res) {
       return;
     }
 
+    // A photo with no guided flow in progress -- nothing to attach it to.
+    // Point them at the flow rather than silently ignoring it or burning an
+    // AI call on empty text.
+    if (hasPhoto) {
+      await sendMessage(chatId, 'I can only use a meal photo as part of logging a meal -- tap "📝 Log a meal" (or tell me what you ate) and send the photo when I ask for it.');
+      res.status(200).json({ ok: true });
+      return;
+    }
+
     // Everything past here involves at least one AI call (classification,
     // and usually a second for extraction/chat/booking) -- show typing so
     // the gap before a reply reads as "thinking", not broken.
@@ -1101,6 +1344,15 @@ module.exports = async function handler(req, res) {
     const context = await recentContext(userId, 8);
     const { intent, appointmentAction } = await classifyIntent(apiKey, text, context);
     await logMessage(userId, chatId, 'in', text, intent);
+
+    // Food-sounding free text starts the same guided meal+date confirmation
+    // flow as the button, carrying the text forward so it isn't asked for
+    // twice -- see "Guided meal logging" above. It replies for itself.
+    if (intent === 'log_meal') {
+      await startMealLogFlow(chatId, text);
+      res.status(200).json({ ok: true });
+      return;
+    }
 
     let reply;
     if (intent === 'help') {
@@ -1112,8 +1364,6 @@ module.exports = async function handler(req, res) {
       reply = await gapSummary(userId);
     } else if (intent === 'meal_ideas') {
       reply = await mealIdeas(userId);
-    } else if (intent === 'log_meal') {
-      reply = await logMeal(userId, text, null);
     } else if (intent === 'appointment') {
       if (appointmentAction === 'list') reply = await listAppointments(userId);
       else if (appointmentAction === 'cancel') reply = await cancelAppointment(userId, text);
