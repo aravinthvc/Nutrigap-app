@@ -6,9 +6,21 @@ description: NutriGap / NutriGap_Bot build status — what's shipped, what's pen
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
-**Deploy-status note:** a screenshot from Aravinth's live bot this session showed the guided meal-logging flow (the "Which meal is this for? / Which date?" questions) already running in production — meaning more of the pending work below may already be deployed than the checklist at the bottom assumed. Don't trust the checklist's "done/pending" marks blindly going forward; confirm against what's actually live when in doubt.
+**Deploy-status note:** the cold-photo fix, the dead-end-on-failed-parse fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter are all now **confirmed live** — Aravinth redeployed `api/telegram-webhook.js`, tested a cold photo of idlis/sambar/chutney live in the bot (it correctly started the flow, asked meal/date, identified the photo, and logged it on confirm), and confirmed "working." The `/log` command is also now registered in Telegram's own "/" menu (ran the `setMyCommands` curl command). Nothing from this session is pending redeploy anymore as of 2026-10-07.
 
-## Newest this session: Telegram was rejecting photos the website could read just fine — fixed, cold photos now start the flow automatically
+## Newest this session: expanded the individual food catalog with 100 dishes from the top 10 world cuisines
+
+Aravinth asked for the `foods` catalog to cover the top 10 world cuisines with real nutritional info, separately from BFB's own (already well-covered) Indian menu. Scoped it with him first: standard global top 10 (Italian, Chinese, Japanese, Mexican, Thai, French, Mediterranean/Greek, Middle Eastern, Korean, American/Southern), ~10 dishes per cuisine, same estimate style as the rest of the catalog (no per-dish source lookup, consistent with how `enrich_foods_round2.sql` etc. were already built).
+
+**`add_world_cuisine_foods.sql`** — 100 new rows (10 per cuisine), each with the full macro + 15-micronutrient profile the rest of `foods` carries, plus search keywords for common alternate spellings (e.g. "kung po chicken", "general tsos chicken"). Calories are derived directly from each dish's protein/carb/fat grams (4/4/9 kcal/g) rather than picked separately, so every entry reconciles exactly — same Atwater-factor discipline the existing catalog already follows (e.g. Chana masala's 280 kcal already matches 11g protein + 34g carbs + 11g fat almost exactly). Verified by actually running the script against a real local Postgres 16 instance (not just reading it): all 100 rows insert cleanly, structural checks confirm every row has the correct 20 numeric columns, and running the script a second time inserts zero new rows (the `where not exists` dedup guard works as intended).
+
+**Not yet run in Supabase** — standalone script, no dependency on anything else pending; safe to run any time.
+
+### Decision: no race/ethnicity input in the energy-needs model
+
+Aravinth asked how the model should vary energy/nutrient needs by race and by age group. Researched this (see chat for sources) before answering: NutriGap's `computeTargets()` already varies energy needs by age (direct term in the Mifflin-St Jeor BMR formula) and sex, and varies micronutrient DRI targets by a 6-bracket age table — all pre-existing, no gap there. Race/ethnicity deliberately stays **out** of the energy formula: real but small measured RMR differences between some racial groups persist even after adjusting for body composition (~5% in one well-cited study), but the effect is too weak and inconsistent for mainstream dietetics to have adopted a race-specific version of Mifflin-St Jeor (the equation's own original validation didn't even report its sample's racial makeup) — so NutriGap's current race-agnostic approach matches standard practice, not a shortfall. Where ethnicity genuinely matters more is a separate question: WHO recommends lower BMI cutoffs for Asian populations for overweight/obesity risk classification (≥23/≥27.5 vs. the standard ≥25/≥30), since Asians carry more visceral fat and face elevated diabetes risk at a lower BMI — relevant to BFB's mostly-Indian customer base if a "healthy weight band" feature is ever added, but NutriGap doesn't compute or display BMI at all today, so this isn't fixing an existing gap. No code changed from this — it's a recorded decision so a future session doesn't redo the research or assume race belongs in the kcal formula.
+
+## Telegram was rejecting photos the website could read just fine — fixed, cold photos now start the flow automatically
 
 Aravinth sent 6 screenshots: the website's photo button correctly identified two different idli/sambar/chutney meal photos ("Four small idlis, a small bowl of coconut chutney, and a small bowl of sambar", etc.), but sending the exact same photos to Telegram got back the generic redirect — *"I can only use a meal photo as part of logging a meal -- tap '📝 Log a meal'... and send the photo when I ask for it."* His question: why did the two channels give such different results for the same image?
 
@@ -18,7 +30,7 @@ Aravinth sent 6 screenshots: the website's photo button correctly identified two
 
 Verified via three new test scenarios (`test_telegram_webhook.js`, 5g/5g2/5g3): a cold confident photo now correctly starts the flow, auto-analyzes once meal/date are confirmed, and logs on "yes"; a cold unconfident (blurry) photo gets the same honest placeholder as before, not a crash or a dangling flow; a cold photo that's escaped mid-flow doesn't leak into the next, unrelated flow. Full suite (including every earlier scenario) still passes, and the cron-nudge regression suite is unaffected. Help text updated to say a photo can be sent any time, not just "when asked."
 
-**Not yet deployed** — folds into the same `api/telegram-webhook.js` redeploy as everything else below.
+**Deployed and confirmed live** — Aravinth redeployed and tested this live via the bot.
 
 ## Found and fixed a real bug via Aravinth's own live testing — the guided flow could dead-end on a failed parse
 
@@ -30,9 +42,9 @@ Aravinth tested the bot live (sharing a screenshot) and typed "log a meal" as pl
 
 Verified with a new regression test (`test_telegram_webhook.js`, scenario 5j) that reproduces the exact sequence from the screenshot — plain "log a meal" text, confirm meal, confirm date, fail to parse, confirm the flow stays open, then successfully log real food afterward using the same already-confirmed meal/date. Full pre-existing suite (including the new photo-analysis scenarios) still passes.
 
-**Not yet deployed** — folds into the same `api/telegram-webhook.js` redeploy as everything else below.
+**Deployed and confirmed live** — Aravinth redeployed and tested this live via the bot.
 
-## Real photo-based meal analysis on Telegram (previously just a placeholder) — built, tested, not yet deployed
+## Real photo-based meal analysis on Telegram (previously just a placeholder) — built, tested, deployed and confirmed live
 
 Aravinth picked this as the feature to build this session (from the "Pending" list below). Previously, sending a photo at the "what did you eat?" step just saved it to `meal_photo_logs` for manual review and told the person plainly it wouldn't count — no analysis at all. Now it actually looks at the photo.
 
@@ -48,7 +60,7 @@ Aravinth picked this as the feature to build this session (from the "Pending" li
 
 Verified via the test harness (`test_telegram_webhook.js`, scenarios 5f rewritten + 5f2/5f3 added): a confidently-identified photo shows the description and logs correctly on "yes" (via the same strict matching as typed text, including a correctly-flagged unmatched item); on "no" it falls back to asking for typed text and the flow stays open; a photo Claude isn't confident about still gets the honest placeholder treatment unchanged.
 
-**Not yet deployed** — needs `add_meal_photo_analysis.sql` run in Supabase, then `api/telegram-webhook.js` redeployed (same redeploy this folds into — see Deploy checklist).
+**Deployed and confirmed live** — `add_meal_photo_analysis.sql` has been run in Supabase and `api/telegram-webhook.js` redeployed; Aravinth confirmed a real photo gets correctly identified and logged in production.
 
 ## Telegram meal-ideas bot now answers the SPECIFIC nutrient asked about, and never shows a corrupted meal-box dish
 
@@ -67,7 +79,7 @@ Aravinth's report (with screenshots): asking "give me some suggestions to bridge
 
 Verified via the test harness (`test_telegram_webhook.js`, scenarios 7d–7g added): vitamin K vs. vitamin C questions now get distinct, nutrient-correct replies; `/meals iron` routes directly; the corrupted "Rice with kadala curry" row never appears in a generic `/meals` suggestion.
 
-## Guided meal-logging flow on Telegram (meal + date confirmation) — built, tested, not yet deployed
+## Guided meal-logging flow on Telegram (meal + date confirmation) — built, tested, deployed and confirmed live
 
 Aravinth's feedback after seeing the new quick-action menu: "should we keep a separate menu for Log a Meal? we should ask details of the meal that is getting logged — Breakfast/Lunch/etc, which date is the entry for, etc. Else how do you track random entries/photos?" Walked through the trade-offs with him (scope: button-only vs. every message; date range; whether to build photo handling now) via explicit choices — he picked: confirm meal+date on **every** food-sounding message (not just the button), support typing **any date** (not just today/yesterday), and add a **placeholder** step for photos first (now superseded by real analysis above).
 
@@ -138,8 +150,9 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 3. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
 4. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
 5. ~~Redeploy `api/telegram-webhook.js` (the macro-gaps display fix)~~ — **done, confirmed live.**
-6. **Guided meal-logging flow appears to already be live** (confirmed via Aravinth's own screenshot this session showing the meal/date questions) — but double-check `add_telegram_meal_logging_flow.sql` and `add_meal_photo_analysis.sql` have both actually been run in Supabase, since the photo-analysis, cold-photo, and dead-end-bug-fix code is newer than what's live and needs both.
-7. **Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel** — carries the cold-photo fix, the dead-end bug fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter (all in the same two files, one redeploy covers all of it).
-8. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
-9. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-10. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+6. ~~Run `add_telegram_meal_logging_flow.sql` and `add_meal_photo_analysis.sql` in Supabase~~ — **done, confirmed** (photo analysis tested live and working).
+7. ~~Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel~~ — **done, confirmed live** (cold-photo fix, dead-end bug fix, real photo-based meal analysis, nutrient-specific-ideas fix, and corrupted-dish filter all tested working in production).
+8. **Run `add_world_cuisine_foods.sql` in the Supabase SQL editor** — adds the 100 new world-cuisine dishes; standalone, no code redeploy needed, safe any time.
+9. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
+10. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+11. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
