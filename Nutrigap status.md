@@ -6,23 +6,37 @@ description: NutriGap / NutriGap_Bot build status — what's shipped, what's pen
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
-## Newest this session: Telegram `/gap` summary now always shows macro gaps too
+## Newest this session: guided meal-logging flow on Telegram (meal + date confirmation, honest photo placeholder)
 
-Aravinth reported (screenshot of a real `/gap` reply): the "Biggest gaps" list only ever showed micronutrients (Iron, Vitamin A, Vitamin D, Vitamin E, Vitamin B12), never protein/carbs/fat/fiber, even on a day where calories were clearly short too.
+Aravinth's feedback after seeing the new quick-action menu: "should we keep a separate menu for Log a Meal? we should ask details of the meal that is getting logged — Breakfast/Lunch/etc, which date is the entry for, etc. Else how do you track random entries/photos?" Walked through the trade-offs with him (scope: button-only vs. every message; date range; whether to build photo handling now) via explicit choices — he picked: confirm meal+date on **every** food-sounding message (not just the button), support typing **any date** (not just today/yesterday), and add a **placeholder** step for photos (accepted and saved for review, not analyzed).
 
-**Root cause:** `formatGapSummary()` in `api/telegram-webhook.js` took the top 5 nutrients from `rankGapsForInsight()` ranked purely by % off target. Micronutrient targets (vitamins especially) routinely show much larger percentage gaps than macros do, so macros were getting crowded out of the top 5 every time, even when meaningfully off target themselves — not a data bug, a display bug.
+**What changed:** logging a meal — whether started by typing food free-text ("2 chapathis for lunch") or by tapping "📝 Log a meal" (or `/log`) — now always asks which meal (Breakfast/Lunch/Dinner/Snack, inline buttons) and which date (Today/Yesterday/type one) before anything is saved, instead of silently guessing the meal from time-of-day and always assuming today. If the free-text entry already said what was eaten, it's not asked a third time — the flow just confirms meal+date and finishes. If it was started via the button, a final step asks "what did you eat, or send a photo."
 
-**Fix:** `formatGapSummary()` now splits `rankGapsForInsight()`'s output into two guaranteed sections instead of one blended top-5: a "Macros" section listing every off-target macro (protein/carbs/fat/fiber — kcal stays on its own summary line as before), and a "Biggest micronutrient gaps" section capped at the top 4 by % off target. Macros never get crowded out again; the micronutrient list is still capped so the message doesn't get unwieldy. Verified against the test harness (`test_telegram_webhook.js`, scenario 12b) and a standalone reconstruction of Aravinth's actual numbers — confirms protein/carbs/fat/fiber now appear whenever they're off target, independent of how big the vitamin percentages are that day.
+**State machine:** new `telegram_links.pending_log` (jsonb) column, same pattern as the existing `onboarding_state` — `{step, text, meal, entryDate}`, `step` one of `meal | date | custom_date | items`. Reuses the existing inline-keyboard + `callback_query` plumbing (same one onboarding already uses) rather than inventing a new mechanism.
 
-No schema change, no new file — just `api/telegram-webhook.js` to redeploy (copy-paste into GitHub, same as any other code change). Website (`index.html`) was never affected by this bug — it already shows macro and micro gaps in two separate always-visible cards, not a truncated top-N list.
+**Date typing:** accepts `2026-10-05` or a day+month like "5 Oct" / "Oct 5" / "5 October" (assumed current year, rolled back a year if that would land in the future). Deliberately **rejects slash dates** like "5/10" rather than guess DD/MM vs MM/DD — the exact silent misread this flow exists to avoid for an Indian user typing day-first. Also rejects anything more than 90 days back or in the future (almost certainly a typo, not a real backfill).
+
+**Photos:** not analyzed (that's separate, bigger work — see Pending). When someone sends a photo at the "what did you eat" step, it's saved to a new `meal_photo_logs` table (Telegram's `file_id`, meal, date, user) for manual review, and the reply says plainly it won't count toward their nutrient numbers yet — same honesty principle as the rest of the app (medical-report insights, partial BFB logging): never let something uncounted pass as counted. A photo sent with no logging flow in progress gets a short redirect instead of being silently dropped or burning an AI call on empty text.
+
+**Escaping the flow:** mid-flow, sending a recognized command or a different menu button (`/gap`, `📊 My gap`, etc.) abandons the half-finished log and is handled normally — doesn't trap someone who changed their mind. A stray text message while a button tap is expected (the meal/date steps) gets redirected back to the question rather than silently ignored or misinterpreted.
+
+**`logMeal()`** no longer guesses the meal (previously `defaultMealForHour`) or the date (previously always today) — both are now required parameters, supplied only after the person has confirmed them.
+
+Verified via the existing test harness (`test_telegram_webhook.js`, scenarios 5/5b rewritten, 5c–5i added) covering: free-text entry finishing after 2 taps, button-first entry asking a 3rd question, custom date (valid and the rejected-slash-format case), the photo placeholder (in-flow and out-of-flow), mid-flow escape via `/gap`, and the stray-text redirect — all pass, alongside the full pre-existing regression suite (onboarding, appointments, nudges, menu-button routing, etc.).
+
+**Not yet deployed** — needs `add_telegram_meal_logging_flow.sql` run in Supabase (adds `telegram_links.pending_log` + the new `meal_photo_logs` table) and `api/telegram-webhook.js` redeployed. See Deploy checklist.
+
+## Telegram `/gap` summary now always shows macro gaps too (shipped, deployed, confirmed live 2026-10-07)
+
+Root cause was `formatGapSummary()` taking the top 5 nutrients from `rankGapsForInsight()` ranked purely by % off target — vitamin gaps routinely run bigger percentages than macro gaps, so protein/carbs/fat/fiber kept getting crowded out of the top 5 even when meaningfully off. Fixed by splitting into two guaranteed sections: "Macros" (every off-target macro) and "Biggest micronutrient gaps" (capped top 4). Confirmed live via screenshot — a real `/gap` reply now shows both sections correctly.
 
 ## Telegram UX overhaul (shipped and fully deployed 2026-10-06/07)
 
-Aravinth's feedback: the Telegram journey "needs to be more intuitive, easy and smooth." He picked three priorities (over making suggestions tappable / confirming the meal bucket, which are still open — see Pending): command menu + quick-action buttons, responsiveness polish, and daily nudges/reminders. **All three confirmed live in production** — SQL migrations run, `CRON_SECRET` set in Vercel, and the Telegram "/" command menu confirmed working via screenshot in the real NutriGapBot chat.
+Aravinth's feedback: the Telegram journey "needs to be more intuitive, easy and smooth." He picked three priorities: command menu + quick-action buttons, responsiveness polish, and daily nudges/reminders. **All three confirmed live in production** — SQL migrations run, `CRON_SECRET` set in Vercel, and the Telegram "/" command menu confirmed working via screenshot in the real NutriGapBot chat.
 
-**1. Persistent quick-action menu + command routing.** `MAIN_MENU_KEYBOARD` (a Telegram reply keyboard, not inline — docks under the text box and stays visible across every later message): 📊 My gap / 🍽 Meal ideas / 📝 Log a meal / 📅 Appointments / ❓ Help. Sent after linking, after onboarding finishes, and on /start or /help. Button taps route via `BUTTON_TO_COMMAND` onto the same deterministic code path as the matching slash command (no extra AI call) — "📝 Log a meal" has no command equivalent, it just prompts for what to type.
+**1. Persistent quick-action menu + command routing.** `MAIN_MENU_KEYBOARD` (a Telegram reply keyboard, not inline — docks under the text box and stays visible across every later message): 📊 My gap / 🍽 Meal ideas / 📝 Log a meal / 📅 Appointments / ❓ Help. Sent after linking, after onboarding finishes, and on /start or /help. Button taps route via `BUTTON_TO_COMMAND` onto the same deterministic code path as the matching slash command (no extra AI call) — "📝 Log a meal" now starts the guided logging flow above (previously just a static prompt).
 
-Telegram's own "/" command menu (`setMyCommands`) was a separate one-time bot-level config call — **done**, confirmed live via screenshot (`/gap`, `/meals`, `/appointments`, `/nudges`, `/help`, `/unlink` all showing with descriptions in the real chat).
+Telegram's own "/" command menu (`setMyCommands`) — **done**, confirmed live via screenshot (`/gap`, `/meals`, `/appointments`, `/nudges`, `/help`, `/unlink` all showing with descriptions in the real chat). The new `/log` command isn't in that menu yet — optional, low-priority to add (the button already covers it); would need another one-time `setMyCommands` call if wanted.
 
 **2. Responsiveness polish.** `sendTyping()` fires Telegram's "typing..." indicator right before any reply that involves an AI call.
 
@@ -30,9 +44,7 @@ Telegram's own "/" command menu (`setMyCommands`) was a separate one-time bot-le
 
 ## Pre-existing data leak found and still needs cleanup: BFB dishes already inside `foods`
 
-While checking whether the `foods`/`meal_box_items` separation (below) was actually holding, Aravinth spotted BFB-style dish names (Ragi roti, Apple banana date salad with cream, Bajra roti, Ash gourd soup, ...) in the website's food-search/logging dropdown — not the Meal Box tab. Diagnostic query confirmed: **47 rows** in `foods` share a name with a `meal_box_items` dish and are missing fiber + all micronutrients (`NULL`). These predate this session entirely — an earlier abandoned 47-row import batch never committed (verified via Postgres statement atomicity) and only covered soups/salads, which doesn't explain entries like "Bajra roti". Likely an older bulk import from before the architecture decision was made.
-
-**Not yet cleaned up.** The 47 rows are still live and still searchable/loggable as if they were complete foods — this is the actual "Ragi roti still visible" bug, worse than it first looked (2 rows → 47). Next step: decide whether to delete them outright (since the "Log this" meal-box flow below now covers the same dishes honestly) or complete their micronutrient data properly. Query to re-pull the list any time:
+While checking whether the `foods`/`meal_box_items` separation (below) was actually holding, Aravinth spotted BFB-style dish names (Ragi roti, Apple banana date salad with cream, Bajra roti, Ash gourd soup, ...) in the website's food-search/logging dropdown — not the Meal Box tab. Diagnostic query confirmed: **47 rows** in `foods` share a name with a `meal_box_items` dish and are missing fiber + all micronutrients (`NULL`). These predate this session entirely. Still not cleaned up — decide delete vs. complete, then act. Query to re-pull the list any time:
 ```sql
 select f.name, f.kcal, f.protein, f.carbs, f.fat, f.fiber, f.iron
 from public.foods f
@@ -44,46 +56,34 @@ Note while investigating: BFB's own richest recipe source (`final-recipe-file.md
 
 ## Architecture decision: `foods` and `meal_box_items` stay separate (2026-10-06)
 
-`foods` is the clean, fully-verified personal diet-logging catalog (always-complete macro + micronutrient data). `meal_box_items` is BFB's ~1,200-dish subscription menu — separate table, macro-only (kcal/protein/carbs/fat), used for meal-idea suggestions AND honest partial logging (see below). This was Aravinth's explicit call after watching an attempt to import BFB dishes into `foods` turn into three rounds of schema fights — mixing a messy, macro-only subscription menu into a catalog that's always assumed complete data was the wrong model, not a solvable bug.
+`foods` is the clean, fully-verified personal diet-logging catalog (always-complete macro + micronutrient data). `meal_box_items` is BFB's ~1,200-dish subscription menu — separate table, macro-only (kcal/protein/carbs/fat), used for meal-idea suggestions AND honest partial logging (see below).
 
 ## Honest logging of BFB meal-box dishes (`add_meal_box_logging.sql` — confirmed run in production)
 
-The conundrum Aravinth raised: if the app recommends a BFB dish to close a gap, the customer reasonably expects to log it once eaten — but `meal_box_items` has no micronutrient data, so logging it as if it were a complete `foods` entry would silently understate/misstate the day's real micronutrient gap. Resolution, explicitly approved: keep `foods` exactly as strict as the architecture decision says (logging search only ever shows complete, verified entries) — don't widen that door again. Instead, add a distinct, honestly-labeled way to log a BFB dish as a BFB dish.
+If the app recommends a BFB dish to close a gap, the customer reasonably expects to log it once eaten — but `meal_box_items` has no micronutrient data. Resolution: keep `foods` strict, add a distinct, honestly-labeled way to log a BFB dish as a BFB dish.
 
-**Schema:** `diet_entries.food_id` is nullable; `diet_entries.meal_box_item_id` (FK to `meal_box_items`, nullable); a check constraint enforces exactly one of the two is ever set. No separate "source" flag needed — the app derives partial-vs-complete from which id column is populated.
+**Schema:** `diet_entries.food_id` is nullable; `diet_entries.meal_box_item_id` (FK to `meal_box_items`, nullable); a check constraint enforces exactly one of the two is ever set.
 
-**Website (`index.html`):** `mealBoxCard()` (Meal Box tab, "Best for today's gap" mode) has a "Log this" button next to each suggested dish. Logs with `meal_box_item_id` set (not `food_id`), servings 1, current meal selection. `mapMealBoxRow()` maps a meal-box row the same shape as `mapFoodRow()` but with fiber/all 15 micronutrients explicitly `0` and `isPartial:true`. `refreshDietLog()` embeds both `foods(*)` and `meal_box_items(*)` and picks the right mapper per row. The diet log table tags each BFB-sourced row "BFB box"; `renderGaps()` shows a plain-language note above the macro gaps whenever any of today's entries are partial.
+**Website (`index.html`):** `mealBoxCard()` has a "Log this" button next to each suggested dish. `mapMealBoxRow()` maps a meal-box row with fiber/all 15 micronutrients explicitly `0` and `isPartial:true`. The diet log table tags each BFB-sourced row "BFB box"; `renderGaps()` shows a plain-language note whenever any of today's entries are partial.
 
-**Telegram (`api/telegram-webhook.js` + `lib/nutrition-core.js`):** `nc.mapMealBoxRow()` exported from `lib/nutrition-core.js`. `loadEntriesForDate()` embeds both tables like the website. `logMeal()`: when an item the AI couldn't match against `foods` turns out to match a `meal_box_items` name (simple case-insensitive match, no second AI call), it's logged as a partial meal-box entry instead of just being flagged to `food_requests`. `gapSummary()`/`formatGapSummary()` append the same "N BFB meal-box item(s) logged" note as the website.
-
-**Scope note:** the "Log this" button only exists in the Meal Box tab's gap-mode (where a dish is being actively suggested to close today's gap) — not general browse mode or a general meal-box search-to-log.
-
-## Earlier phase: "fix the menu gap, make the customer journey easier" — shipped, tested
-
-Triggered by a real Telegram log attempt failing to match "Ragi semiya" in the catalog.
-
-**1. Telegram self-serve onboarding (acquisition funnel).** A cold Telegram contact with no account can now sign up and fill in their profile entirely in chat, starting anonymous and claiming a real email only once value is shown. Creates a synthetic Supabase Auth user via the Auth Admin API. New `telegram_links.source` / `onboarding_state` columns (`telegram_selfserve_onboarding.sql`).
-
-**2. Unmatched Telegram food mentions feed the catalog backlog.** Writes every unmatched name into the existing `food_requests` table.
-
-**3. Telegram meal-box ideas.** Ported the website's Meal Box "gap mode" logic to Telegram ("what should I eat?" / `/meals`). Shared scoring logic lives in `lib/nutrition-core.js`.
-
-**Abandoned earlier, reverted cleanly:** an attempt to hand-vet and import 47 BFB dishes directly into `foods` as a "macro-only" tier. None of those 47 rows ever landed in `foods`. The `foods.micronutrients_complete` column added for that attempt is inert; `revert_micronutrients_complete_column.sql` drops it if wanted.
+**Telegram:** `nc.mapMealBoxRow()` from `lib/nutrition-core.js`. `logMeal()`: when an item can't match `foods` but matches a `meal_box_items` name, it's logged as a partial meal-box entry. `gapSummary()` appends the same "N BFB meal-box item(s) logged" note as the website.
 
 ## Pending / next up
 
 - **Clean up the 47 pre-existing incomplete BFB rows in `foods`** — decide delete vs. complete, then act.
-- **Telegram UX — not yet built, picked by Aravinth as lower priority this round:** making meal-idea/meal-box suggestions tappable (inline "Log this" buttons instead of retyping the dish name) and confirming the meal bucket (breakfast/lunch/dinner/snack) via quick buttons instead of silently guessing from time of day.
+- **Photo-based meal logging — real analysis, not just the placeholder save.** Needs a vision step to identify food from an image; bigger, separate piece of work.
 - **Keyword/synonym expansion pass** — still blocked on Aravinth exporting `select name, keywords from public.foods order by name;` and sending the result.
 - `foods` grows only through genuinely verified entries from now on — likely sourced from the `food_requests` backlog, not BFB's menu spreadsheet.
-- Medical trends dashboard; appointment reminders/confirmations (deferred, admin-side); voice/photo handling in the bot; Hindi/regional-language support.
+- Medical trends dashboard; appointment reminders/confirmations (deferred, admin-side); Hindi/regional-language support.
 
 ## Deploy checklist
 
 1. ~~Run `add_meal_box_logging.sql` and `add_telegram_nudges.sql` in the Supabase SQL editor~~ — **done, confirmed.**
-2. **Redeploy `api/telegram-webhook.js`** to Vercel (today's macro-gap fix — the only file that changed this round).
-3. ~~Merge `vercel.json`'s `crons` entry into the real project config~~ — **done, confirmed.**
-4. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
-5. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
-6. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-7. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+2. ~~Merge `vercel.json`'s `crons` entry into the real project config~~ — **done, confirmed.**
+3. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
+4. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
+5. ~~Redeploy `api/telegram-webhook.js` (the macro-gaps display fix)~~ — **done, confirmed live.**
+6. **Run `add_telegram_meal_logging_flow.sql` in the Supabase SQL editor** (new — adds `telegram_links.pending_log` + the new `meal_photo_logs` table).
+7. **Redeploy `api/telegram-webhook.js`** to Vercel (today's guided meal-logging flow — the only code file that changed this round).
+8. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+9. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
