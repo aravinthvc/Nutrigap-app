@@ -6,7 +6,26 @@ description: NutriGap / NutriGap_Bot build status — what's shipped, what's pen
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
-## Newest this session: guided meal-logging flow on Telegram (meal + date confirmation, honest photo placeholder)
+## Newest this session: Telegram meal-ideas bot now answers the SPECIFIC nutrient asked about, and never shows a corrupted meal-box dish
+
+Aravinth's report (with screenshots): asking "give me some suggestions to bridge the vitamin C gap" and then "...vitamin K gap" got back the **identical reply both times**, which also named vitamin K as "your biggest real gap" regardless of which one was asked — plus the reply included an irrelevant, visibly-corrupted BFB dish block ("2074g protein", "1563g carbs" on single-serving dishes). His ask: give precise, per-nutrient information, using "hybrid knowledge from both the database and Claude LLM," and make it accurate **and token-efficient**.
+
+**Root cause:** `mealIdeas()` always answered "what's today's single biggest gap, generically" — it never looked at which nutrient the person actually named. `classifyIntent` only ever returns a bucket (`meal_ideas`), not the specific nutrient inside the sentence.
+
+**Fix — four pieces, all in `api/telegram-webhook.js` and `lib/nutrition-core.js`, no new SQL needed:**
+
+1. **`extractNamedNutrient(text)`** — a plain regex lookup (`NUTRIENT_ALIASES`, ~20 entries covering every macro/micro NutriGap tracks, incl. "vitamin k"/"vit k", "fibre"/"fiber", "salt"/"sodium", etc.). Deliberately **not** another AI call — the vocabulary is small and closed, so this is free and instant, directly answering the "token efficient" half of the ask.
+2. **`nutrientSpecificIdeas(t, tg, nutrientKey)`** (new) — answers the one nutrient actually asked about: says plainly if it's already met, or if it's a "limit" nutrient (sodium) where the right move is eating *less*, not more; otherwise shows BFB meal-box dishes **only** if that nutrient is one of the four meal-box data actually covers (calories/protein/carbs/fat — `MEALBOX_COVERED_GAP_LABELS`), and always backs it up with real individual foods from the verified `foods` catalog, which is the only place micronutrient data exists at all.
+3. **`pickFoodFallbackForNutrient()`** (new, in `lib/nutrition-core.js`) — generalizes the existing `pickFoodFallbackForGap()` to rank `foods` by one *named* nutrient instead of always deriving the nutrient from today's single biggest gap.
+4. **`mealIdeas(userId, targetNutrientKey)`** — signature now takes an optional nutrient key; when present, delegates straight to `nutrientSpecificIdeas()` instead of the old generic reply. Both call sites (`/meals`/`/ideas` command, and the `meal_ideas` AI-routed branch) now pass `extractNamedNutrient(text)`. The `/meals`/`/ideas` command match was also loosened to catch `/meals iron` (trailing text), so a nutrient named right after the command routes with **zero** AI calls, not just when it comes through free-text classification.
+
+**Separately — the actual corrupted-data trigger:** `rankMealBoxForGap()` (`lib/nutrition-core.js`) now runs every meal-box dish through a new `hasPlausibleMacros()` guard (protein ≤150g, carbs ≤250g, fat ≤150g per serving — deliberately generous, no real single serving needs more) before it can ever be suggested. This is the same known BFB source-data bug as `meal_box_carbs_decimal_fix.sql` from a prior session (decimal point lost, e.g. "1563" meaning "15.63") — that script explicitly flagged two "Rice with kadala curry" rows as still-unfixed, and this session's screenshot is exactly that bug resurfacing, plus a newly-spotted third row ("Rice with Prawns malai curry," 2074g protein). Rather than guess a "corrected" number (against the app's no-hallucination principle), bad rows are now just never shown — paired with a new diagnostic query, `find_implausible_meal_box_macros.sql`, for Aravinth to find and hand-fix every such row at the source in Supabase. Hiding isn't the same as fixing: a hidden dish currently can't be suggested to anyone until its real numbers are corrected.
+
+Verified via the test harness (`test_telegram_webhook.js`, scenarios 7d–7g added): vitamin K vs. vitamin C questions now get distinct, nutrient-correct replies; `/meals iron` routes directly; the corrupted "Rice with kadala curry" row never appears in a generic `/meals` suggestion; full pre-existing regression suite still passes.
+
+**Not yet deployed** — pure application-code change, no new SQL migration of its own, but folds into the same pending `api/telegram-webhook.js` redeploy as the guided meal-logging flow below (both are in the same file). See Deploy checklist.
+
+## Guided meal-logging flow on Telegram (meal + date confirmation, honest photo placeholder) — built, tested, not yet deployed
 
 Aravinth's feedback after seeing the new quick-action menu: "should we keep a separate menu for Log a Meal? we should ask details of the meal that is getting logged — Breakfast/Lunch/etc, which date is the entry for, etc. Else how do you track random entries/photos?" Walked through the trade-offs with him (scope: button-only vs. every message; date range; whether to build photo handling now) via explicit choices — he picked: confirm meal+date on **every** food-sounding message (not just the button), support typing **any date** (not just today/yesterday), and add a **placeholder** step for photos (accepted and saved for review, not analyzed).
 
@@ -23,8 +42,6 @@ Aravinth's feedback after seeing the new quick-action menu: "should we keep a se
 **`logMeal()`** no longer guesses the meal (previously `defaultMealForHour`) or the date (previously always today) — both are now required parameters, supplied only after the person has confirmed them.
 
 Verified via the existing test harness (`test_telegram_webhook.js`, scenarios 5/5b rewritten, 5c–5i added) covering: free-text entry finishing after 2 taps, button-first entry asking a 3rd question, custom date (valid and the rejected-slash-format case), the photo placeholder (in-flow and out-of-flow), mid-flow escape via `/gap`, and the stray-text redirect — all pass, alongside the full pre-existing regression suite (onboarding, appointments, nudges, menu-button routing, etc.).
-
-**Not yet deployed** — needs `add_telegram_meal_logging_flow.sql` run in Supabase (adds `telegram_links.pending_log` + the new `meal_photo_logs` table) and `api/telegram-webhook.js` redeployed. See Deploy checklist.
 
 ## Telegram `/gap` summary now always shows macro gaps too (shipped, deployed, confirmed live 2026-10-07)
 
@@ -71,6 +88,7 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 ## Pending / next up
 
 - **Clean up the 47 pre-existing incomplete BFB rows in `foods`** — decide delete vs. complete, then act.
+- **Hand-fix the implausible-macro rows in `meal_box_items`** at the source — run `find_implausible_meal_box_macros.sql` in Supabase, correct each flagged row. The app now hides these from suggestions either way, but a hidden dish is one that currently can't be recommended to anyone.
 - **Photo-based meal logging — real analysis, not just the placeholder save.** Needs a vision step to identify food from an image; bigger, separate piece of work.
 - **Keyword/synonym expansion pass** — still blocked on Aravinth exporting `select name, keywords from public.foods order by name;` and sending the result.
 - `foods` grows only through genuinely verified entries from now on — likely sourced from the `food_requests` backlog, not BFB's menu spreadsheet.
@@ -83,7 +101,8 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 3. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
 4. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
 5. ~~Redeploy `api/telegram-webhook.js` (the macro-gaps display fix)~~ — **done, confirmed live.**
-6. **Run `add_telegram_meal_logging_flow.sql` in the Supabase SQL editor** (new — adds `telegram_links.pending_log` + the new `meal_photo_logs` table).
-7. **Redeploy `api/telegram-webhook.js`** to Vercel (today's guided meal-logging flow — the only code file that changed this round).
-8. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-9. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+6. **Run `add_telegram_meal_logging_flow.sql` in the Supabase SQL editor** (adds `telegram_links.pending_log` + the new `meal_photo_logs` table).
+7. **Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel** — carries both the guided meal-logging flow AND this session's nutrient-specific-ideas fix + corrupted-dish filter (same files, one redeploy covers all of it).
+8. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
+9. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+10. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
