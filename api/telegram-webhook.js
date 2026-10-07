@@ -533,6 +533,13 @@ async function askLogItems(chatId, state) {
 
 async function reaskCurrentLogStep(chatId, state) {
   if (state.step === 'date') { await askLogDate(chatId, state); return; }
+  if (state.step === 'photo_confirm') {
+    await sendMessage(chatId,
+      `Still waiting on: log "${state.photoDescription}" under ${state.meal} (${dateLabelFor(state.entryDate)})?`,
+      [[{ text: '✅ Yes, log it', callback_data: 'log:photoconfirm:yes' }, { text: '✏️ No, let me type it', callback_data: 'log:photoconfirm:no' }]]
+    );
+    return;
+  }
   await sendMessage(chatId, 'Which meal is this for?', MEAL_OPTIONS.map(o => [{ text: o.label, callback_data: `log:meal:${o.value}` }]));
 }
 
@@ -610,25 +617,161 @@ async function handleLogButton(chatId, userId, state, data) {
       return;
     }
   }
+  if (kind === 'photoconfirm') {
+    if (state.step !== 'photo_confirm') { await reaskCurrentLogStep(chatId, state); return; }
+    if (value === 'yes') {
+      await clearPendingLog(chatId);
+      await sendTyping(chatId);
+      const reply = await logMeal(userId, state.photoDescription, state.meal, state.entryDate);
+      await logMessage(userId, chatId, 'out', reply, 'log_meal');
+      await sendMessage(chatId, reply);
+      if (state.photoLogId) {
+        try { await db.update('meal_photo_logs', ['id=eq.' + state.photoLogId], { confirmed: true }); }
+        catch (e) { console.error('Could not mark photo log confirmed:', e.message); }
+      }
+      return;
+    }
+    if (value === 'no') {
+      if (state.photoLogId) {
+        try { await db.update('meal_photo_logs', ['id=eq.' + state.photoLogId], { confirmed: false }); }
+        catch (e) { console.error('Could not mark photo log declined:', e.message); }
+      }
+      await askLogItems(chatId, { ...state, step: 'items', photoDescription: null, photoLogId: null });
+      return;
+    }
+  }
   await reaskCurrentLogStep(chatId, state);
 }
 
-// A meal photo isn't analyzed yet (that's a separate, bigger piece of work
-// -- see the project status notes) -- rather than silently drop it or
-// pretend it was logged, it's saved for manual review and the person is
-// told plainly it won't count toward today's numbers, same honesty
-// principle as everywhere else in this app.
-async function savePhotoPlaceholder(chatId, userId, state, fileId) {
-  await clearPendingLog(chatId);
+// ---------- Meal-photo identification ----------
+//
+// This never invents macros or logs anything by itself. It only identifies
+// roughly what's on the plate (the same kind of plain description a person
+// would type -- "2 rotis with dal and a side salad"), which then goes
+// through the EXACT same strict catalog-matching logMeal() already uses
+// for typed text (see extractMealItems() above) -- so a photo can only
+// ever result in an exact catalog match or an honestly-flagged miss, never
+// a guessed dish or a guessed nutrient value. And nothing from a photo is
+// logged without the person seeing the guess and confirming it first --
+// same confirm-before-logging principle as the meal/date steps above.
+// When the photo can't be confidently read (blurry, no food visible, or
+// the model just isn't sure), it falls back to the old honest placeholder:
+// saved for manual review, plainly told it doesn't count yet.
+
+async function telegramGetFilePath(fileId) {
+  const res = await fetch(TELEGRAM_API + '/getFile?file_id=' + encodeURIComponent(fileId));
+  if (!res.ok) throw new Error('Telegram getFile failed: ' + res.status);
+  const data = await res.json();
+  if (!data.ok || !data.result || !data.result.file_path) throw new Error('Telegram getFile returned no file_path');
+  return data.result.file_path;
+}
+
+async function downloadTelegramFileAsBase64(filePath) {
+  const url = 'https://api.telegram.org/file/bot' + process.env.TELEGRAM_BOT_TOKEN + '/' + filePath;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Telegram file download failed: ' + res.status);
+  const buf = Buffer.from(await res.arrayBuffer());
+  const ext = (filePath.split('.').pop() || '').toLowerCase();
+  const mediaType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+  return { base64: buf.toString('base64'), mediaType };
+}
+
+// Looks at one meal photo and tries to say, in plain language, what's on
+// the plate. Returns {confident, description, note} -- description is
+// only ever non-empty when confident is true, and note is always a short,
+// honest caveat (portion sizes are a guess from a photo either way).
+async function identifyFoodFromPhoto(apiKey, base64, mediaType) {
+  const systemPrompt = `You're looking at one photo of a meal someone is about to log in a nutrition-tracking app. Describe what's on the plate the way a person would type it into a food diary -- e.g. "2 rotis with dal and a side salad" or "a bowl of curd rice with pickle".
+
+Rules -- these matter more than being helpful:
+- Only describe what you can actually see. Never name a specific branded or regional dish unless it's unmistakable from the photo -- prefer a plain description of the visible components (grain/bread, curry/gravy, vegetable, protein source) over guessing an exact recipe name.
+- Never guess at ingredients hidden inside a dish (a curry's exact spices, what's inside a stuffed paratha, etc).
+- If the photo is blurry, dark, shows no food, or you're genuinely not confident what it shows, set "confident" to false rather than guessing -- being wrong here would log the wrong thing against someone's health data.
+- Don't estimate exact weights or calories yourself -- just describe the food and a rough everyday portion ("a bowl of", "2 pieces of", "a small side of").
+
+Respond with ONLY a JSON object, no markdown, no commentary, in exactly this shape:
+{"confident": true, "description": "...", "note": "portion size is an estimate from the photo"}
+
+If not confident:
+{"confident": false, "description": null, "note": "the photo is too blurry to tell what's on the plate"}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 300,
+      system: systemPrompt,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: 'What does this meal photo show?' },
+        ],
+      }],
+    }),
+  });
+  if (!response.ok) throw new Error('Anthropic vision API error: ' + (await response.text()));
+  const data = await response.json();
+  const textBlock = (data.content || []).find(b => b.type === 'text');
+  let cleaned = ((textBlock && textBlock.text) || '').replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{'), end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
+  let parsed;
+  try { parsed = JSON.parse(cleaned); } catch (e) { return { confident: false, description: null, note: "couldn't make sense of the photo" }; }
+  return {
+    confident: parsed.confident === true && typeof parsed.description === 'string' && parsed.description.trim().length > 0,
+    description: typeof parsed.description === 'string' ? parsed.description.trim() : null,
+    note: typeof parsed.note === 'string' ? parsed.note : '',
+  };
+}
+
+// Entry point when a photo arrives at the "what did you eat" step. Always
+// saves a meal_photo_logs row either way (the team's own manual-review
+// backstop, same as before this feature existed) -- confident or not, so
+// nothing is ever lost. A confident read moves the flow to a new
+// "photo_confirm" step and waits for a yes/no tap before logging anything;
+// an unconfident one (or any failure downloading/analyzing the photo --
+// fails closed, never guesses to cover for an error) falls back to asking
+// the person to type it instead, same as the original placeholder.
+async function handleMealPhoto(chatId, userId, state, fileId) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  let result = { confident: false, description: null, note: '' };
+  if (apiKey) {
+    try {
+      const filePath = await telegramGetFilePath(fileId);
+      const { base64, mediaType } = await downloadTelegramFileAsBase64(filePath);
+      result = await identifyFoodFromPhoto(apiKey, base64, mediaType);
+    } catch (e) {
+      console.error('Photo identification failed:', e.message);
+    }
+  }
+
+  let logId = null;
   try {
-    await db.insert('meal_photo_logs', [{
-      user_id: userId, chat_id: String(chatId), meal: state.meal, entry_date: state.entryDate, telegram_file_id: fileId,
-    }], { returning: false });
+    const inserted = await db.insert('meal_photo_logs', [{
+      user_id: userId, chat_id: String(chatId), meal: state.meal, entry_date: state.entryDate,
+      telegram_file_id: fileId, ai_description: result.description, ai_confident: result.confident,
+    }]);
+    logId = inserted && inserted[0] && inserted[0].id;
   } catch (e) {
     console.error('Could not save meal photo log:', e.message);
   }
+
+  if (!result.confident) {
+    await clearPendingLog(chatId);
+    const reason = result.note ? ` (${result.note})` : '';
+    await sendMessage(chatId,
+      `I couldn't confidently tell what's in that photo${reason} -- saved it for the team to review, but it won't count toward your numbers yet. Type what you ate instead and I'll log that properly, e.g. "2 chapathis and dal".`
+    );
+    return;
+  }
+
+  await setPendingLog(chatId, { ...state, step: 'photo_confirm', photoDescription: result.description, photoLogId: logId });
+  const noteLine = result.note ? `\n(${result.note})` : '';
   await sendMessage(chatId,
-    `Got the photo — saved it against ${state.meal} (${dateLabelFor(state.entryDate)}), but I don't read meal photos yet, so it won't count toward your nutrient numbers. I've kept it for the team to review. For now, type what was in it and I'll log that properly, e.g. "2 chapathis and dal".`
+    `Looks like: ${result.description}${noteLine}\n\nLog this under ${state.meal} (${dateLabelFor(state.entryDate)})?`,
+    [[{ text: '✅ Yes, log it', callback_data: 'log:photoconfirm:yes' }, { text: '✏️ No, let me type it', callback_data: 'log:photoconfirm:no' }]]
   );
 }
 
@@ -1249,7 +1392,7 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
   '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
-  '• Tell me what you ate ("2 chapathis with palak matar for lunch"), or tap "📝 Log a meal" / send /log -- either way I\'ll ask which meal and which date, then log it (you can also send a photo when asked; I\'ll save it for the team to review, but it won\'t count toward your numbers yet -- I don\'t read meal photos)\n' +
+  '• Tell me what you ate ("2 chapathis with palak matar for lunch"), or tap "📝 Log a meal" / send /log -- either way I\'ll ask which meal and which date, then log it (you can also send a photo when asked -- I\'ll try to identify what\'s on the plate and show you before logging anything; if I\'m not confident I\'ll save it for the team to review instead and ask you to type it)\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap, or name a specific nutrient ("suggestions to bridge my vitamin C gap") for ideas just for that one\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
@@ -1326,7 +1469,7 @@ module.exports = async function handler(req, res) {
       if (isEscapeFromLogFlow(text)) {
         await clearPendingLog(chatId);
         // falls through to normal handling below with the original message
-      } else if (state.step === 'meal' || state.step === 'date') {
+      } else if (state.step === 'meal' || state.step === 'date' || state.step === 'photo_confirm') {
         await sendMessage(chatId, 'Tap one of the buttons above to answer that one.');
         await reaskCurrentLogStep(chatId, state);
         res.status(200).json({ ok: true });
@@ -1349,7 +1492,9 @@ module.exports = async function handler(req, res) {
       } else if (state.step === 'items') {
         if (hasPhoto) {
           const fileId = message.photo[message.photo.length - 1].file_id;
-          await savePhotoPlaceholder(chatId, userId, state, fileId);
+          await logMessage(userId, chatId, 'in', '[photo]', 'log_meal');
+          await sendTyping(chatId);
+          await handleMealPhoto(chatId, userId, state, fileId);
           res.status(200).json({ ok: true });
           return;
         }
