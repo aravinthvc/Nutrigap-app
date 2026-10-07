@@ -748,13 +748,120 @@ function formatMealBoxDish(d) {
   return `• ${d.name}${tag} — ${bits.join(', ')}`;
 }
 
-async function mealIdeas(userId) {
+// Common nutrient names/synonyms people actually type in Telegram, mapped
+// onto the exact lib/nutrition-core.js ALL_NUTRIENT_DEFS key -- so a
+// question that names a specific nutrient ("vitamin K", "iron", "fibre")
+// gets an answer about THAT nutrient instead of whatever today's single
+// biggest gap happens to be (the bug the user flagged: asking about
+// vitamin C and vitamin K back to back got the identical reply, both
+// times about vitamin K, because the old code never looked at what was
+// actually asked). Deliberately a plain regex list, not another AI call --
+// the vocabulary is small and closed (five macros + ten-odd micros), so
+// this is free and instant where an extra Claude call would be neither,
+// directly answering the "token efficient" part of the ask.
+const NUTRIENT_ALIASES = [
+  { key: 'vitB12', re: /\bvit(?:amin)?\.?\s*b\s*-?\s*12\b/i },
+  { key: 'vitB6', re: /\bvit(?:amin)?\.?\s*b\s*-?\s*6\b/i },
+  { key: 'vitK', re: /\bvit(?:amin)?\.?\s*k\b/i },
+  { key: 'vitC', re: /\bvit(?:amin)?\.?\s*c\b/i },
+  { key: 'vitD', re: /\bvit(?:amin)?\.?\s*d\b/i },
+  { key: 'vitA', re: /\bvit(?:amin)?\.?\s*a\b/i },
+  { key: 'vitE', re: /\bvit(?:amin)?\.?\s*e\b/i },
+  { key: 'folate', re: /\bfolate\b|\bfolic\s*acid\b|\bvit(?:amin)?\.?\s*b\s*-?\s*9\b/i },
+  { key: 'iron', re: /\biron\b/i },
+  { key: 'calcium', re: /\bcalcium\b/i },
+  { key: 'magnesium', re: /\bmagnesium\b/i },
+  { key: 'zinc', re: /\bzinc\b/i },
+  { key: 'potassium', re: /\bpotassium\b/i },
+  { key: 'sodium', re: /\bsodium\b|\bsalt\b/i },
+  { key: 'selenium', re: /\bselenium\b/i },
+  { key: 'fiber', re: /\bfib(?:er|re)\b/i },
+  { key: 'protein', re: /\bprotein\b/i },
+  { key: 'carbs', re: /\bcarb(?:ohydrate)?s?\b/i },
+  { key: 'fat', re: /\bfat\b/i },
+  { key: 'kcal', re: /\bcal(?:orie)?s?\b/i },
+];
+
+function extractNamedNutrient(text) {
+  if (!text) return null;
+  for (const { key, re } of NUTRIENT_ALIASES) {
+    if (re.test(text)) return key;
+  }
+  return null;
+}
+
+// Answers a question about ONE specific nutrient (e.g. "suggestions to
+// bridge my vitamin C gap") instead of the generic "what's left of today's
+// targets" answer mealIdeas() gives by default -- a vitamin K question and
+// a vitamin C question must never come back with the same text.
+// meal_box_items only ever carries kcal/protein/carbs/fat (see
+// MEALBOX_COVERED_GAP_LABELS), so a BFB dish list only ever appears for
+// one of those four; any other nutrient (fiber, any vitamin/mineral) goes
+// straight to the verified `foods` catalog, which is the only place that
+// data actually exists -- never shown as if a meal-box dish could help.
+async function nutrientSpecificIdeas(t, tg, nutrientKey) {
+  const def = nc.ALL_NUTRIENT_DEFS.find(d => d.key === nutrientKey);
+  if (!def) {
+    return "I don't have that one in my tracking list -- ask me about calories, protein, carbs, fat, fiber, or any of the vitamins/minerals on your gap summary.";
+  }
+
+  const consumed = t[nutrientKey] || 0;
+  const target = tg[nutrientKey] || 0;
+
+  if (def.type === 'limit') {
+    if (consumed > target) {
+      return `${def.label} is a limit, not something to fill up -- you're already ${Math.round(consumed - target)}${def.unit} over today's limit, so the move is eating less of it, not more.`;
+    }
+    return `${def.label} is a limit, not a gap -- you're within today's limit (${Math.round(consumed)}${def.unit} of ${Math.round(target)}${def.unit}), so there's nothing to bridge there.`;
+  }
+
+  const { cls } = nc.gapStatus(def, consumed, target);
+  if (cls === 'met') {
+    return `You're already on target for ${def.label.toLowerCase()} today (${Math.round(consumed)}${def.unit} of ${Math.round(target)}${def.unit}) -- no gap to bridge there right now.`;
+  }
+
+  const shortBy = Math.round(target - consumed);
+  const lines = [`Your ${def.label.toLowerCase()} gap today: ${Math.round(consumed)}${def.unit} of ${Math.round(target)}${def.unit} so far -- ${shortBy}${def.unit} short.`];
+
+  if (nc.MEALBOX_COVERED_GAP_LABELS.includes(def.label)) {
+    const remaining = {
+      kcal: Math.max(0, tg.kcal - t.kcal),
+      protein: Math.max(0, tg.protein - t.protein),
+      carbs: Math.max(0, tg.carbs - t.carbs),
+      fat: Math.max(0, tg.fat - t.fat),
+    };
+    const items = await loadMealBoxItems();
+    const top = nc.rankMealBoxForGap(remaining, items).slice(0, 3);
+    if (top.length > 0) {
+      lines.push(`\nBFB meal-box ideas that help with this:`);
+      lines.push(top.map(formatMealBoxDish).join('\n'));
+    }
+  }
+
+  const foods = await loadFoodsFull();
+  const fallback = nc.pickFoodFallbackForNutrient(t, tg, foods, nutrientKey);
+  if (fallback && !fallback.met && fallback.top.length > 0) {
+    lines.push(`\nTop individual foods for your ${def.label.toLowerCase()} gap:`);
+    lines.push(fallback.top.map(f => {
+      const pct = Math.round(((f[nutrientKey] || 0) / (fallback.remaining || 1)) * 100);
+      return `• ${f.name} — covers ${pct}% of it, ${Math.round(f.kcal)} kcal/serving`;
+    }).join('\n'));
+  }
+
+  return lines.join('\n');
+}
+
+async function mealIdeas(userId, targetNutrientKey) {
   const loaded = await loadTargets(userId);
   if (!loaded) return "You haven't finished setting up your profile yet -- add your age, sex, height and weight on the website (Profile tab) first, then I can work out your targets.";
   const dateStr = nc.istDateStr(new Date());
   const entries = await loadEntriesForDate(userId, dateStr);
   const t = nc.totals(entries);
   const tg = loaded.targets;
+
+  if (targetNutrientKey) {
+    return nutrientSpecificIdeas(t, tg, targetNutrientKey);
+  }
 
   const remaining = {
     kcal: Math.max(0, tg.kcal - t.kcal),
@@ -1144,7 +1251,7 @@ const HELP_TEXT =
   '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
   '• Tell me what you ate ("2 chapathis with palak matar for lunch"), or tap "📝 Log a meal" / send /log -- either way I\'ll ask which meal and which date, then log it (you can also send a photo when asked; I\'ll save it for the team to review, but it won\'t count toward your numbers yet -- I don\'t read meal photos)\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
-  '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap\n' +
+  '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap, or name a specific nutrient ("suggestions to bridge my vitamin C gap") for ideas just for that one\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
   '• "book an online appointment Tuesday evening" to request a real consultation\n' +
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
@@ -1309,8 +1416,12 @@ module.exports = async function handler(req, res) {
       res.status(200).json({ ok: true });
       return;
     }
-    if (lower === '/meals' || lower === '/ideas') {
-      const reply = await mealIdeas(userId);
+    // Also matches "/meals iron" / "/ideas vitamin c" etc -- a nutrient
+    // named after the command still routes here directly (no AI call
+    // needed at all), rather than falling through to the classifier just
+    // because trailing text broke an exact string match.
+    if (lower === '/meals' || lower === '/ideas' || lower.startsWith('/meals ') || lower.startsWith('/ideas ')) {
+      const reply = await mealIdeas(userId, extractNamedNutrient(text));
       await logMessage(userId, chatId, 'in', text, 'meal_ideas');
       await logMessage(userId, chatId, 'out', reply, 'meal_ideas');
       await sendMessage(chatId, reply);
@@ -1363,7 +1474,7 @@ module.exports = async function handler(req, res) {
     } else if (intent === 'gap_summary') {
       reply = await gapSummary(userId);
     } else if (intent === 'meal_ideas') {
-      reply = await mealIdeas(userId);
+      reply = await mealIdeas(userId, extractNamedNutrient(text));
     } else if (intent === 'appointment') {
       if (appointmentAction === 'list') reply = await listAppointments(userId);
       else if (appointmentAction === 'cancel') reply = await cancelAppointment(userId, text);
