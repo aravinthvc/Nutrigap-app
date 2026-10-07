@@ -580,11 +580,23 @@ function parseLoggedDate(text) {
 }
 
 async function finishMealLog(chatId, userId, state) {
-  await clearPendingLog(chatId);
   await sendTyping(chatId);
-  const reply = await logMeal(userId, state.text, state.meal, state.entryDate);
+  const { reply, loggedAnything } = await logMeal(userId, state.text, state.meal, state.entryDate);
   await logMessage(userId, chatId, 'out', reply, 'log_meal');
   await sendMessage(chatId, reply);
+  if (loggedAnything) {
+    await clearPendingLog(chatId);
+  } else {
+    // A failed parse (nothing recognizable as food, or nothing in the
+    // catalog matched) used to end the flow here anyway -- clearing
+    // pending_log before even checking whether anything was logged. That
+    // silently dropped the person out of the flow on the very first typo
+    // or ambiguous phrasing (including "log a meal" itself getting
+    // mistaken for food-sounding text by the classifier below and carried
+    // forward as state.text). Meal and date are already confirmed, so
+    // just ask again for what was eaten instead of dead-ending.
+    await askLogItems(chatId, { ...state, text: null });
+  }
 }
 
 async function proceedAfterDate(chatId, userId, state) {
@@ -620,14 +632,23 @@ async function handleLogButton(chatId, userId, state, data) {
   if (kind === 'photoconfirm') {
     if (state.step !== 'photo_confirm') { await reaskCurrentLogStep(chatId, state); return; }
     if (value === 'yes') {
-      await clearPendingLog(chatId);
       await sendTyping(chatId);
-      const reply = await logMeal(userId, state.photoDescription, state.meal, state.entryDate);
+      const { reply, loggedAnything } = await logMeal(userId, state.photoDescription, state.meal, state.entryDate);
       await logMessage(userId, chatId, 'out', reply, 'log_meal');
       await sendMessage(chatId, reply);
+      // They confirmed the identification was right either way -- a
+      // catalog-match miss afterward is a separate, honestly-flagged issue
+      // (see logMeal()'s food_requests fallback), not a wrong identification.
       if (state.photoLogId) {
         try { await db.update('meal_photo_logs', ['id=eq.' + state.photoLogId], { confirmed: true }); }
         catch (e) { console.error('Could not mark photo log confirmed:', e.message); }
+      }
+      if (loggedAnything) {
+        await clearPendingLog(chatId);
+      } else {
+        // Same fix as finishMealLog() above -- don't dead-end the flow on
+        // a catalog-match miss, ask for it in different words instead.
+        await askLogItems(chatId, { ...state, step: 'items', photoDescription: null, photoLogId: null });
       }
       return;
     }
@@ -1158,16 +1179,22 @@ ${catalogList}`;
 // notice a meal mentioned in the text itself, but that's now informational
 // only (useful if it ever disagrees enough to investigate); the confirmed
 // value always wins.
+//
+// Returns {reply, loggedAnything} rather than a bare string -- callers
+// (finishMealLog, the photo-confirm "yes" handler) need to know whether
+// anything actually got written before they clear the guided flow's
+// pending_log, so a failed parse re-asks what was eaten instead of
+// silently dropping the person out of an in-progress log.
 async function logMeal(userId, text, meal, entryDate) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return "Something's misconfigured on the server side -- Aravinth's been notified.";
+  if (!apiKey) return { reply: "Something's misconfigured on the server side -- Aravinth's been notified.", loggedAnything: false };
 
   const catalog = await loadFoodCatalog();
-  if (catalog.length === 0) return "I couldn't reach the food catalog just now -- try again in a moment.";
+  if (catalog.length === 0) return { reply: "I couldn't reach the food catalog just now -- try again in a moment.", loggedAnything: false };
 
   const { items } = await extractMealItems(apiKey, text, catalog, meal);
   if (items.length === 0) {
-    return "I couldn't tell what you ate from that -- try naming the dish more directly, e.g. \"2 chapathis with palak matar for lunch\".";
+    return { reply: "I couldn't tell what you ate from that -- try naming the dish more directly, e.g. \"2 chapathis with palak matar for lunch\".", loggedAnything: false };
   }
 
   const matched = items.filter(it => it.name);
@@ -1191,7 +1218,7 @@ async function logMeal(userId, text, meal, entryDate) {
 
   if (matched.length === 0 && mealBoxMatches.length === 0) {
     await recordFoodRequests(userId, unmatched.map(u => u.queryText));
-    return `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the food catalog yet -- I've flagged it for the team to add. Try describing it differently in the meantime, or it may just not be in there yet.`;
+    return { reply: `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the food catalog yet -- I've flagged it for the team to add. Try describing it differently in the meantime, or it may just not be in there yet.`, loggedAnything: false };
   }
 
   const nameToId = new Map(catalog.map(f => [f.name, f.id]));
@@ -1216,7 +1243,7 @@ async function logMeal(userId, text, meal, entryDate) {
     reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the catalog yet, flagged for the team.)`;
   }
   reply += ' Ask "what\'s my gap today?" any time to see how that shifted things.';
-  return reply;
+  return { reply, loggedAnything: true };
 }
 
 // ---------- Dietitian chat (shared thread with the website's Dietitian tab) ----------
