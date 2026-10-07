@@ -6,9 +6,23 @@ description: NutriGap / NutriGap_Bot build status — what's shipped, what's pen
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
-## Newest this session: real photo-based meal analysis on Telegram (previously just a placeholder) — built, tested, not yet deployed
+**Deploy-status note:** a screenshot from Aravinth's live bot this session showed the guided meal-logging flow (the "Which meal is this for? / Which date?" questions) already running in production — meaning more of the pending work below may already be deployed than the checklist at the bottom assumed. Don't trust the checklist's "done/pending" marks blindly going forward; confirm against what's actually live when in doubt.
 
-Aravinth picked this as the next feature to build (from the "Pending" list below). Previously, sending a photo at the "what did you eat?" step just saved it to `meal_photo_logs` for manual review and told the person plainly it wouldn't count — no analysis at all. Now it actually looks at the photo.
+## Newest this session: found and fixed a real bug via Aravinth's own live testing — the guided flow could dead-end on a failed parse
+
+Aravinth tested the bot live (sharing a screenshot) and typed "log a meal" as plain text (not tapping the menu button). The bot asked which meal, then which date — then replied "I couldn't tell what you ate from that -- try naming the dish more directly" and the flow just ended there, with no way to continue without starting over.
+
+**Root cause:** the AI intent classifier calls a message like "log a meal" intent `log_meal` even though it names no actual food (reasonable — it IS about logging a meal). That intent branch starts the guided flow carrying the literal text forward as "what they said they ate" (`startMealLogFlow(chatId, text)`), on the assumption that `log_meal`-classified text always describes food. Once meal+date were confirmed, the flow skipped straight to logging "log a meal" as if it were a dish — which obviously matches nothing. The deeper bug: `finishMealLog()` (and the equivalent photo-confirm handler) cleared `pending_log` **before** checking whether `logMeal()` actually logged anything, so ANY failed parse — this phrase, a typo, an obscure dish name, anything — silently ended the guided flow and dropped the person out of it, no matter how it was triggered.
+
+**Fix, in `api/telegram-webhook.js`:** `logMeal()` now returns `{reply, loggedAnything}` instead of a bare string. `finishMealLog()` and the photo-confirm "yes" handler both now only clear `pending_log` when `loggedAnything` is true; on a failed parse, they send the honest explanation and then re-ask "what did you eat?" with the already-confirmed meal/date still in place, instead of ending the flow. This fixes the exact case Aravinth hit, and the more general class of bug it's one instance of (any mis-parsed or unmatched food description used to end the flow the same way).
+
+Verified with a new regression test (`test_telegram_webhook.js`, scenario 5j) that reproduces the exact sequence from the screenshot — plain "log a meal" text, confirm meal, confirm date, fail to parse, confirm the flow stays open, then successfully log real food afterward using the same already-confirmed meal/date. Full pre-existing suite (including the new photo-analysis scenarios) still passes.
+
+**Not yet deployed** — folds into the same `api/telegram-webhook.js` redeploy as everything else below.
+
+## Real photo-based meal analysis on Telegram (previously just a placeholder) — built, tested, not yet deployed
+
+Aravinth picked this as the feature to build this session (from the "Pending" list below). Previously, sending a photo at the "what did you eat?" step just saved it to `meal_photo_logs` for manual review and told the person plainly it wouldn't count — no analysis at all. Now it actually looks at the photo.
 
 **How it stays honest (the app's core principle, applied to vision the same way it's applied everywhere else):** Claude is shown the photo and asked to describe what's on the plate only as specifically as it can actually see — never naming an exact dish it's guessing at, never estimating calories itself, and explicitly told to say "not confident" rather than guess when the photo is blurry, dark, or unclear. Whatever it identifies is shown to the person, who must tap **"✅ Yes, log it"** or **"✏️ No, let me type it instead"** before anything is saved — nothing from a photo is ever logged silently. Confirmed, the description runs through the exact same strict catalog-matching `logMeal()` already uses for typed text (`extractMealItems()`'s exact-name-only guardrail) — so a photo can only ever result in a real catalog match or an honestly-flagged "couldn't find that" miss, never a fabricated nutrient value. When Claude isn't confident, it falls back to the original placeholder behavior unchanged (saved for the team, person asked to type it instead).
 
@@ -16,11 +30,11 @@ Aravinth picked this as the next feature to build (from the "Pending" list below
 - `telegramGetFilePath()` / `downloadTelegramFileAsBase64()` — pulls the actual image bytes from Telegram's file API (`getFile` then the file-download endpoint) using the bot token, which the account already has as `TELEGRAM_BOT_TOKEN`.
 - `identifyFoodFromPhoto()` — one Claude vision call (image + text content blocks) with an honesty-first system prompt; returns `{confident, description, note}`.
 - `handleMealPhoto()` — orchestrates the above, always writes a `meal_photo_logs` row (confident or not — this table remains the team's manual-review backstop either way), and either moves to a new `photo_confirm` step (confident) or falls back to the old placeholder message (not confident, or any failure downloading/analyzing — fails closed, never guesses to paper over an error).
-- New `pending_log` step `photo_confirm` and a new callback kind `log:photoconfirm:yes|no`, following the exact same guided-flow pattern as the meal/date confirmation steps (escapable, re-askable on a stray message, etc).
+- New `pending_log` step `photo_confirm` and a new callback kind `log:photoconfirm:yes|no`, following the exact same guided-flow pattern as the meal/date confirmation steps (escapable, re-askable on a stray message, and — after the bug fix above — never dead-ends on a catalog-match miss either).
 
 **Schema (`add_meal_photo_analysis.sql`):** three new nullable columns on `meal_photo_logs` — `ai_description` (what Claude thought it saw, or null), `ai_confident` (whether it was confident enough to show a description at all), `confirmed` (null while awaiting a reply, true/false once the person answers). Every photo is still saved to this table regardless of outcome, now with richer context for manual review of the misses.
 
-Verified via the test harness (`test_telegram_webhook.js`, scenarios 5f rewritten + 5f2/5f3 added): a confidently-identified photo shows the description and logs correctly on "yes" (via the same strict matching as typed text, including a correctly-flagged unmatched item); on "no" it falls back to asking for typed text and the flow stays open; a photo Claude isn't confident about still gets the honest placeholder treatment unchanged. Full pre-existing regression suite still passes.
+Verified via the test harness (`test_telegram_webhook.js`, scenarios 5f rewritten + 5f2/5f3 added): a confidently-identified photo shows the description and logs correctly on "yes" (via the same strict matching as typed text, including a correctly-flagged unmatched item); on "no" it falls back to asking for typed text and the flow stays open; a photo Claude isn't confident about still gets the honest placeholder treatment unchanged.
 
 **Not yet deployed** — needs `add_meal_photo_analysis.sql` run in Supabase, then `api/telegram-webhook.js` redeployed (same redeploy this folds into — see Deploy checklist).
 
@@ -39,7 +53,7 @@ Aravinth's report (with screenshots): asking "give me some suggestions to bridge
 
 **Separately — the actual corrupted-data trigger:** `rankMealBoxForGap()` (`lib/nutrition-core.js`) now runs every meal-box dish through a new `hasPlausibleMacros()` guard (protein ≤150g, carbs ≤250g, fat ≤150g per serving — deliberately generous, no real single serving needs more) before it can ever be suggested. This is the same known BFB source-data bug as `meal_box_carbs_decimal_fix.sql` from a prior session (decimal point lost, e.g. "1563" meaning "15.63") — that script explicitly flagged two "Rice with kadala curry" rows as still-unfixed, and this session's screenshot is exactly that bug resurfacing, plus a newly-spotted third row ("Rice with Prawns malai curry," 2074g protein). Rather than guess a "corrected" number (against the app's no-hallucination principle), bad rows are now just never shown — paired with a diagnostic query, `find_implausible_meal_box_macros.sql`, for Aravinth to find and hand-fix every such row at the source in Supabase. Hiding isn't the same as fixing: a hidden dish currently can't be suggested to anyone until its real numbers are corrected.
 
-Verified via the test harness (`test_telegram_webhook.js`, scenarios 7d–7g added): vitamin K vs. vitamin C questions now get distinct, nutrient-correct replies; `/meals iron` routes directly; the corrupted "Rice with kadala curry" row never appears in a generic `/meals` suggestion; full pre-existing regression suite still passes.
+Verified via the test harness (`test_telegram_webhook.js`, scenarios 7d–7g added): vitamin K vs. vitamin C questions now get distinct, nutrient-correct replies; `/meals iron` routes directly; the corrupted "Rice with kadala curry" row never appears in a generic `/meals` suggestion.
 
 ## Guided meal-logging flow on Telegram (meal + date confirmation) — built, tested, not yet deployed
 
@@ -47,15 +61,13 @@ Aravinth's feedback after seeing the new quick-action menu: "should we keep a se
 
 **What changed:** logging a meal — whether started by typing food free-text ("2 chapathis for lunch") or by tapping "📝 Log a meal" (or `/log`) — now always asks which meal (Breakfast/Lunch/Dinner/Snack, inline buttons) and which date (Today/Yesterday/type one) before anything is saved, instead of silently guessing the meal from time-of-day and always assuming today. If the free-text entry already said what was eaten, it's not asked a third time — the flow just confirms meal+date and finishes. If it was started via the button, a final step asks "what did you eat, or send a photo."
 
-**State machine:** `telegram_links.pending_log` (jsonb) column, same pattern as the existing `onboarding_state` — `{step, text, meal, entryDate, ...}`, `step` one of `meal | date | custom_date | items | photo_confirm` (the last one added by the photo-analysis feature above). Reuses the existing inline-keyboard + `callback_query` plumbing (same one onboarding already uses) rather than inventing a new mechanism.
+**State machine:** `telegram_links.pending_log` (jsonb) column, same pattern as the existing `onboarding_state` — `{step, text, meal, entryDate, ...}`, `step` one of `meal | date | custom_date | items | photo_confirm`. Reuses the existing inline-keyboard + `callback_query` plumbing (same one onboarding already uses) rather than inventing a new mechanism. Never dead-ends on a failed parse (see the bug fix above) — only clears once something is actually logged.
 
 **Date typing:** accepts `2026-10-05` or a day+month like "5 Oct" / "Oct 5" / "5 October" (assumed current year, rolled back a year if that would land in the future). Deliberately **rejects slash dates** like "5/10" rather than guess DD/MM vs MM/DD — the exact silent misread this flow exists to avoid for an Indian user typing day-first. Also rejects anything more than 90 days back or in the future (almost certainly a typo, not a real backfill).
 
 **Escaping the flow:** mid-flow, sending a recognized command or a different menu button (`/gap`, `📊 My gap`, etc.) abandons the half-finished log and is handled normally — doesn't trap someone who changed their mind. A stray text message while a button tap is expected (meal/date/photo_confirm steps) gets redirected back to the question rather than silently ignored or misinterpreted.
 
 **`logMeal()`** no longer guesses the meal (previously `defaultMealForHour`) or the date (previously always today) — both are now required parameters, supplied only after the person has confirmed them.
-
-Verified via the test harness (`test_telegram_webhook.js`, scenarios 5/5b rewritten, 5c–5i added, 5f2/5f3 added for photo analysis) covering: free-text entry finishing after 2 taps, button-first entry asking a 3rd question, custom date (valid and the rejected-slash-format case), both photo outcomes (confident+confirmed, confident+declined, unconfident placeholder), mid-flow escape via `/gap`, and the stray-text redirect — all pass, alongside the full pre-existing regression suite (onboarding, appointments, nudges, menu-button routing, etc.).
 
 ## Telegram `/gap` summary now always shows macro gaps too (shipped, deployed, confirmed live 2026-10-07)
 
@@ -114,8 +126,8 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 3. ~~Set a `CRON_SECRET` env var in Vercel~~ — **done, confirmed.**
 4. ~~Run the one-time `setMyCommands` curl command~~ — **done, confirmed live via screenshot.**
 5. ~~Redeploy `api/telegram-webhook.js` (the macro-gaps display fix)~~ — **done, confirmed live.**
-6. **Run `add_telegram_meal_logging_flow.sql` AND `add_meal_photo_analysis.sql` in the Supabase SQL editor** (adds `telegram_links.pending_log`, the `meal_photo_logs` table, and its three new analysis columns).
-7. **Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel** — carries the guided meal-logging flow, the nutrient-specific-ideas fix + corrupted-dish filter, AND real photo-based meal analysis (all in the same two files, one redeploy covers all of it).
+6. **Guided meal-logging flow appears to already be live** (confirmed via Aravinth's own screenshot this session showing the meal/date questions) — but double-check `add_telegram_meal_logging_flow.sql` and `add_meal_photo_analysis.sql` have both actually been run in Supabase, since the photo-analysis and dead-end-bug-fix code is newer than what's live and needs both.
+7. **Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel** — carries the dead-end bug fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter (all in the same two files, one redeploy covers all of it).
 8. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
 9. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
 10. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
