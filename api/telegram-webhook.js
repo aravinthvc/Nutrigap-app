@@ -498,11 +498,15 @@ async function handleCallbackQuery(cq) {
 // guessed at.
 //
 // State lives in telegram_links.pending_log (jsonb), the same pattern as
-// onboarding_state: {step, text, meal, entryDate}. step is one of
-// 'meal' | 'date' | 'custom_date' | 'items'. `text` holds the raw "what I
-// ate" message when it was already supplied up front (the free-text entry
-// point) -- in that case the flow skips straight to logging once meal and
-// date are confirmed, instead of asking a third time for what was eaten.
+// onboarding_state: {step, text, meal, entryDate, photoFileId}. step is one
+// of 'meal' | 'date' | 'custom_date' | 'items' | 'photo_confirm'. `text`
+// holds the raw "what I ate" message when it was already supplied up front
+// (the free-text entry point) -- in that case the flow skips straight to
+// logging once meal and date are confirmed, instead of asking a third time
+// for what was eaten. `photoFileId` is the same idea but for a photo sent
+// up front (e.g. before tapping "Log a meal" at all) -- once meal and date
+// are confirmed, it runs straight into the same photo-identification step
+// a photo sent mid-flow would, instead of being discarded.
 
 async function setPendingLog(chatId, state) {
   await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_log: state });
@@ -512,8 +516,8 @@ async function clearPendingLog(chatId) {
   await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_log: null });
 }
 
-async function startMealLogFlow(chatId, text) {
-  const state = { step: 'meal', text: text || null, meal: null, entryDate: null };
+async function startMealLogFlow(chatId, text, photoFileId) {
+  const state = { step: 'meal', text: text || null, meal: null, entryDate: null, photoFileId: photoFileId || null };
   await setPendingLog(chatId, state);
   await sendMessage(chatId, 'Which meal is this for?', MEAL_OPTIONS.map(o => [{ text: o.label, callback_data: `log:meal:${o.value}` }]));
 }
@@ -600,6 +604,16 @@ async function finishMealLog(chatId, userId, state) {
 }
 
 async function proceedAfterDate(chatId, userId, state) {
+  // A photo sent up front (before the flow even started) takes the same
+  // priority as free text supplied up front -- run it through the exact
+  // same identification + confirm-before-logging step a mid-flow photo
+  // goes through, now that meal + date are confirmed, instead of making
+  // the person resend the photo a second time.
+  if (state.photoFileId) {
+    await sendTyping(chatId);
+    await handleMealPhoto(chatId, userId, state, state.photoFileId);
+    return;
+  }
   // Free-text entry point already supplied what they ate -- no need to ask
   // a third time, finish the log now that meal + date are confirmed.
   if (state.text) { await finishMealLog(chatId, userId, state); return; }
@@ -788,7 +802,7 @@ async function handleMealPhoto(chatId, userId, state, fileId) {
     return;
   }
 
-  await setPendingLog(chatId, { ...state, step: 'photo_confirm', photoDescription: result.description, photoLogId: logId });
+  await setPendingLog(chatId, { ...state, step: 'photo_confirm', photoFileId: null, photoDescription: result.description, photoLogId: logId });
   const noteLine = result.note ? `\n(${result.note})` : '';
   await sendMessage(chatId,
     `Looks like: ${result.description}${noteLine}\n\nLog this under ${state.meal} (${dateLabelFor(state.entryDate)})?`,
@@ -1419,7 +1433,7 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
   '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
-  '• Tell me what you ate ("2 chapathis with palak matar for lunch"), or tap "📝 Log a meal" / send /log -- either way I\'ll ask which meal and which date, then log it (you can also send a photo when asked -- I\'ll try to identify what\'s on the plate and show you before logging anything; if I\'m not confident I\'ll save it for the team to review instead and ask you to type it)\n' +
+  '• Tell me what you ate ("2 chapathis with palak matar for lunch"), send a photo of the plate, or tap "📝 Log a meal" / send /log -- any of those gets things started, I\'ll ask which meal and which date, then log it. For a photo, I\'ll try to identify what\'s on the plate and show you before logging anything; if I\'m not confident I\'ll save it for the team to review instead and ask you to type it\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap, or name a specific nutrient ("suggestions to bridge my vitamin C gap") for ideas just for that one\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
@@ -1609,11 +1623,19 @@ module.exports = async function handler(req, res) {
       return;
     }
 
-    // A photo with no guided flow in progress -- nothing to attach it to.
-    // Point them at the flow rather than silently ignoring it or burning an
-    // AI call on empty text.
+    // A photo with no guided flow in progress yet -- rather than discarding
+    // it and making the person resend it after answering two questions,
+    // start the flow now (ask which meal, then which date) and run this
+    // same photo through identification once those are confirmed. This is
+    // what used to just reject the photo outright, which is why sending a
+    // photo "cold" on Telegram looked broken compared to the website's
+    // always-available photo button -- same photo, same vision analysis,
+    // just asked for meal/date first since Telegram has no separate
+    // button for it.
     if (hasPhoto) {
-      await sendMessage(chatId, 'I can only use a meal photo as part of logging a meal -- tap "📝 Log a meal" (or tell me what you ate) and send the photo when I ask for it.');
+      const fileId = message.photo[message.photo.length - 1].file_id;
+      await logMessage(userId, chatId, 'in', '[photo]', 'log_meal');
+      await startMealLogFlow(chatId, null, fileId);
       res.status(200).json({ ok: true });
       return;
     }
