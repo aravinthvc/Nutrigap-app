@@ -8,7 +8,22 @@ Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supaba
 
 **Deploy-status note:** the cold-photo fix, the dead-end-on-failed-parse fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter are all now **confirmed live** — Aravinth redeployed `api/telegram-webhook.js`, tested a cold photo of idlis/sambar/chutney live in the bot (it correctly started the flow, asked meal/date, identified the photo, and logged it on confirm), and confirmed "working." The `/log` command is also now registered in Telegram's own "/" menu (ran the `setMyCommands` curl command). Nothing from this session is pending redeploy anymore as of 2026-10-07.
 
-## Newest this session: expanded the individual food catalog with 100 dishes from the top 10 world cuisines
+## Newest this session: added 101 everyday vegetables, fruits, and animal-protein/fish items to the food catalog
+
+Aravinth asked to add "all vegetable, fruits and animal protein (including fish type)" to the catalog, calculated to standard consumption. Scoped it with him first: a broad everyday set (not an exhaustive botanical list), and animal protein/fish served **both** ways — plain cooked and Indian home-style curry — rather than picking one.
+
+**`add_vegetables_fruits_protein.sql`** — 101 new rows, checked against every existing catalog file for name collisions before building (none found):
+- **40 vegetables** — home-style "sabzi" convention (cooked with oil/tempering, matching the existing vegetable entries in `enrich_foods_vegetables_millets_pulses.sql`), except a handful of raw salad items (Cucumber, Celery, Lettuce) served raw as they're actually eaten.
+- **30 fruits** — raw, standard single serving (1 medium piece or 1 cup, whichever is the natural unit for that fruit).
+- **31 animal protein/fish** — 25 plain-cooked (chicken, mutton, fish/seafood varieties, eggs, dairy-protein) plus 6 Indian curry-style (Chicken curry, Mutton curry, Fish curry, Egg curry, Prawn curry, Beef curry), per Aravinth's "both" choice.
+
+Same conventions as the world-cuisine addition: full macro + 15-micronutrient profile per item, search keywords for regional/alternate names (Hindi/Tamil/English), calories derived directly from each item's protein/carb/fat grams (4/4/9 kcal/g) for internal consistency, and the same `where not exists` dedup guard so it's safe to run even if some names already exist. Verified by actually running the script against a real local Postgres 16 instance: all 101 rows insert cleanly, spot-checked values are correct (Apple raw, Avocado raw, Chicken breast cooked, Chicken curry, Salmon cooked, Spinach cooked all checked individually), and a second run inserts zero new rows.
+
+One self-caught fix: the first draft's header comment and delivery caption said "41 vegetables" — the real count is 40 (checked programmatically). Corrected before calling this done; no data changed, just the count in the comment.
+
+**Not yet run in Supabase** — standalone script, independent of `add_world_cuisine_foods.sql` below; safe to run either one, in any order, any time.
+
+## Earlier this session: expanded the individual food catalog with 100 dishes from the top 10 world cuisines
 
 Aravinth asked for the `foods` catalog to cover the top 10 world cuisines with real nutritional info, separately from BFB's own (already well-covered) Indian menu. Scoped it with him first: standard global top 10 (Italian, Chinese, Japanese, Mexican, Thai, French, Mediterranean/Greek, Middle Eastern, Korean, American/Southern), ~10 dishes per cuisine, same estimate style as the rest of the catalog (no per-dish source lookup, consistent with how `enrich_foods_round2.sql` etc. were already built).
 
@@ -153,6 +168,7 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 6. ~~Run `add_telegram_meal_logging_flow.sql` and `add_meal_photo_analysis.sql` in Supabase~~ — **done, confirmed** (photo analysis tested live and working).
 7. ~~Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel~~ — **done, confirmed live** (cold-photo fix, dead-end bug fix, real photo-based meal analysis, nutrient-specific-ideas fix, and corrupted-dish filter all tested working in production).
 8. **Run `add_world_cuisine_foods.sql` in the Supabase SQL editor** — adds the 100 new world-cuisine dishes; standalone, no code redeploy needed, safe any time.
-9. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
-10. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-11. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+9. **Run `add_vegetables_fruits_protein.sql` in the Supabase SQL editor** — adds the 101 new vegetable/fruit/animal-protein items; standalone, no code redeploy needed, safe any time, independent of item 8.
+10. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
+11. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+12. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
