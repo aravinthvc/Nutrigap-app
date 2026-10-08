@@ -49,7 +49,7 @@ const MEAL_OPTIONS = [
 const MAIN_MENU_KEYBOARD = [
   ['📊 My gap', '🍽 Meal ideas'],
   ['📝 Log a meal', '📅 Appointments'],
-  ['❓ Help'],
+  ['📄 My documents', '❓ Help'],
 ];
 
 // `keyboard`, when given, is an array of rows of {text, callback_data} --
@@ -83,6 +83,25 @@ async function sendTyping(chatId) {
       body: JSON.stringify({ chat_id: chatId, action: 'typing' }),
     });
   } catch (e) { /* best-effort only */ }
+}
+
+// Sends a file already in hand (downloaded server-side from Supabase
+// Storage) as a real Telegram document attachment -- a multipart upload
+// straight to Telegram's own API, no intermediate public URL needed (the
+// storage bucket is private). Used by the "My documents" feature below to
+// deliver a saved medical report or prescription directly into the chat,
+// the same file someone would get from "View original" / the file chip on
+// the website, just native to Telegram instead of a link.
+async function sendTelegramFile(chatId, buffer, filename, contentType, caption) {
+  const form = new FormData();
+  form.append('chat_id', String(chatId));
+  if (caption) form.append('caption', caption.slice(0, 1024));
+  form.append('document', new Blob([buffer], { type: contentType || 'application/octet-stream' }), filename || 'file');
+  const res = await fetch(TELEGRAM_API + '/sendDocument', { method: 'POST', body: form });
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error('Telegram sendDocument failed: ' + res.status + ' ' + text);
+  }
 }
 
 // Dismisses the little loading spinner Telegram shows on the tapped
@@ -202,7 +221,8 @@ async function handleLinking(chatId, text, from) {
     '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
     '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
     '• "book an online appointment Tuesday evening" to request a real consultation\n' +
-    '• "my appointments" to see what\'s upcoming\n\n' +
+    '• "my appointments" to see what\'s upcoming\n' +
+    '• "📄 My documents" to pull back a saved medical report or prescription\n\n' +
     'Use the buttons below any time, or send /help to see this again. /unlink disconnects this chat.',
     null, { menu: true }
   );
@@ -476,6 +496,11 @@ async function handleCallbackQuery(cq) {
       return;
     }
     await handleLogButton(chatId, link.user_id, link.pending_log, data);
+    return;
+  }
+
+  if (data.startsWith('doc:')) {
+    await handleDocumentButton(chatId, link.user_id, data);
     return;
   }
 
@@ -817,6 +842,7 @@ async function handleMealPhoto(chatId, userId, state, fileId) {
 const LOG_FLOW_ESCAPE_COMMANDS = new Set([
   '/start', '/help', '/gap', '/today', '/meals', '/ideas', '/appointments',
   '/unlink', '/nudges', '/nudges on', '/nudges off', '/log',
+  '/documents', '/latestreport', '/latestprescription',
 ]);
 function isEscapeFromLogFlow(text) {
   if (!text) return false;
@@ -1384,6 +1410,177 @@ async function bookAppointment(userId, text, context) {
   return result.reply;
 }
 
+// ---------- Medical documents (reports + doctor-visit prescriptions) ----------
+//
+// A read-only mirror of the website's "Medical reports" and "Doctor
+// visits" tabs -- lets someone pull a saved lab report or a saved
+// prescription back from Telegram. Uploading a NEW one still only happens
+// on the website (the AI extraction step for reports, and the visit form
+// for prescriptions, both live there) -- this only ever reads what's
+// already saved, through the exact same `medical_reports` /
+// `doctor_visits` / `doctor_visit_files` tables and the same
+// `medical-documents` storage bucket the website uses, every query scoped
+// to the verified user_id from telegram_links, same as everything else here.
+
+const DOCS_BUCKET = 'medical-documents';
+const DOC_TYPE_LABELS_TG = { prescription: 'Prescription', consultation_note: 'Consultation note', bill_receipt: 'Bill/receipt', other: 'Document' };
+
+// Same fix as the website's medical trends dashboard: a report's printed
+// "value" sometimes already carries its unit as text (e.g. "70 /cmm"), so
+// naively appending the separately-extracted "unit" field again would
+// duplicate it ("70 /cmm /cmm"). Only append when it isn't already there.
+function formatValueUnitTG(rawValue, unit) {
+  const raw = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+  if (!unit) return raw;
+  const rawNorm = raw.toLowerCase().replace(/\s+/g, '');
+  const unitNorm = String(unit).toLowerCase().replace(/\s+/g, '');
+  if (!unitNorm || rawNorm.includes(unitNorm)) return raw;
+  return `${raw} ${unit}`;
+}
+
+async function loadRecentReports(userId, limit) {
+  const rows = await db.select('medical_reports', {
+    columns: 'id,patient_name,report_date,file_name,markers,storage_path,created_at',
+    filters: ['user_id=eq.' + userId],
+    order: 'created_at.desc',
+    limit: limit || 10,
+  });
+  return rows || [];
+}
+
+// doctor_visit_files has no created_at of its own to sort by -- order by
+// the parent visit's visit_date instead (always present, required on every
+// saved visit), fetched via the same embedded-resource join the website's
+// loadVisits() uses, then sorted here since PostgREST can't order a list by
+// an embedded table's column through this simple select() wrapper.
+async function loadRecentPrescriptions(userId, limit) {
+  const rows = await db.select('doctor_visit_files', {
+    columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty)',
+    filters: ['user_id=eq.' + userId, 'doc_type=eq.prescription'],
+  });
+  const withVisit = (rows || []).filter(r => r.doctor_visits);
+  withVisit.sort((a, b) => String(b.doctor_visits.visit_date || '').localeCompare(String(a.doctor_visits.visit_date || '')));
+  return withVisit.slice(0, limit || 10);
+}
+
+function reportLabel(r) {
+  const n = (r.markers || []).length;
+  const date = r.report_date || new Date(r.created_at).toLocaleDateString();
+  return `🧪 ${date} — ${n} value${n === 1 ? '' : 's'}${r.storage_path ? '' : ' (no file, values only)'}`;
+}
+
+function prescriptionLabel(p) {
+  const v = p.doctor_visits || {};
+  const who = v.doctor_name ? `Dr. ${v.doctor_name}` : (v.specialty || 'Prescription');
+  return `💊 ${v.visit_date || ''} — ${who}`;
+}
+
+// Plain-text fallback for a report with no original file attached (saved
+// before the file-storage feature existed, or the upload failed at save
+// time) -- same info as the website's expanded marker table, as a message
+// instead of a file, per Aravinth's choice rather than skipping it.
+function formatMarkersAsText(report) {
+  const markers = report.markers || [];
+  const header = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}`;
+  if (markers.length === 0) return `${header}\n\nNo values were saved on this one.`;
+  const lines = markers.map(m => {
+    const val = formatValueUnitTG(m.value, m.unit);
+    const range = m.referenceRange ? ` (ref: ${m.referenceRange})` : '';
+    const flag = m.flag && m.flag !== 'Unknown' ? ` — ${m.flag}` : '';
+    return `• ${m.name}: ${val}${range}${flag}`;
+  });
+  return [header, '(no original file attached -- extracted values only)', '', ...lines].join('\n');
+}
+
+async function sendSavedReport(chatId, report) {
+  if (report.storage_path) {
+    try {
+      const { buffer, contentType } = await db.storageDownload(DOCS_BUCKET, report.storage_path);
+      const caption = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}`;
+      await sendTelegramFile(chatId, buffer, report.file_name || 'report', contentType, caption);
+      return;
+    } catch (e) {
+      console.error('Could not download report file, falling back to a text summary:', e.message);
+      // fall through to the text summary below -- better than a dead end
+    }
+  }
+  await sendMessage(chatId, formatMarkersAsText(report));
+}
+
+async function sendVisitFile(chatId, file) {
+  if (!file.storage_path) {
+    await sendMessage(chatId, "That one has no file attached -- nothing to send.");
+    return;
+  }
+  try {
+    const { buffer, contentType } = await db.storageDownload(DOCS_BUCKET, file.storage_path);
+    const v = file.doctor_visits || {};
+    const who = v.doctor_name ? `Dr. ${v.doctor_name}` : (v.specialty || '');
+    const caption = `💊 ${DOC_TYPE_LABELS_TG[file.doc_type] || 'Document'}${v.visit_date ? ' — ' + v.visit_date : ''}${who ? ' (' + who + ')' : ''}`;
+    await sendTelegramFile(chatId, buffer, file.file_name || 'prescription', contentType, caption);
+  } catch (e) {
+    console.error('Could not download visit file:', e.message);
+    await sendMessage(chatId, "Couldn't fetch that file just now -- try again in a moment.");
+  }
+}
+
+// Combined, newest-first browsable list -- reports and prescriptions mixed
+// together, each as its own tappable button (handled in
+// handleDocumentButton below via its callback_data).
+async function documentsListReply(userId) {
+  const [reports, prescriptions] = await Promise.all([
+    loadRecentReports(userId, 10),
+    loadRecentPrescriptions(userId, 10),
+  ]);
+  if (reports.length === 0 && prescriptions.length === 0) {
+    return {
+      text: "You don't have any saved medical reports or prescriptions yet -- those are saved from the website's Medical reports and Doctor visits tabs.",
+      keyboard: null,
+    };
+  }
+  const items = [
+    ...reports.map(r => ({ sortKey: r.report_date || r.created_at, button: { text: reportLabel(r), callback_data: `doc:report:${r.id}` } })),
+    ...prescriptions.map(p => ({ sortKey: (p.doctor_visits && p.doctor_visits.visit_date) || '', button: { text: prescriptionLabel(p), callback_data: `doc:presc:${p.id}` } })),
+  ];
+  items.sort((a, b) => String(b.sortKey).localeCompare(String(a.sortKey)));
+  const top = items.slice(0, 10);
+  return {
+    text: `Your last ${top.length} saved document${top.length === 1 ? '' : 's'} (reports and prescriptions) -- tap one to get it sent here:`,
+    keyboard: top.map(it => [it.button]),
+  };
+}
+
+async function handleDocumentButton(chatId, userId, data) {
+  const parts = data.split(':');
+  const kind = parts[1]; // 'report' | 'presc'
+  const id = parts.slice(2).join(':');
+  await sendTyping(chatId);
+  try {
+    if (kind === 'report') {
+      const rows = await db.select('medical_reports', {
+        columns: 'id,patient_name,report_date,file_name,markers,storage_path,created_at',
+        filters: ['id=eq.' + encodeURIComponent(id), 'user_id=eq.' + userId],
+        limit: 1,
+      });
+      const report = rows && rows[0];
+      if (!report) { await sendMessage(chatId, "Couldn't find that report -- it may have been deleted."); return; }
+      await sendSavedReport(chatId, report);
+    } else if (kind === 'presc') {
+      const rows = await db.select('doctor_visit_files', {
+        columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty)',
+        filters: ['id=eq.' + encodeURIComponent(id), 'user_id=eq.' + userId],
+        limit: 1,
+      });
+      const file = rows && rows[0];
+      if (!file) { await sendMessage(chatId, "Couldn't find that file -- it may have been deleted."); return; }
+      await sendVisitFile(chatId, file);
+    }
+  } catch (e) {
+    console.error('Document fetch/send failed:', e.message);
+    await sendMessage(chatId, "Couldn't fetch that file just now -- try again in a moment.");
+  }
+}
+
 // ---------- Intent routing ----------
 
 async function classifyIntent(apiKey, text, context) {
@@ -1432,13 +1629,14 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
-  '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, Help\n' +
+  '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, My documents, Help\n' +
   '• Tell me what you ate ("2 chapathis with palak matar for lunch"), send a photo of the plate, or tap "📝 Log a meal" / send /log -- any of those gets things started, I\'ll ask which meal and which date, then log it. For a photo, I\'ll try to identify what\'s on the plate and show you before logging anything; if I\'m not confident I\'ll save it for the team to review instead and ask you to type it\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap, or name a specific nutrient ("suggestions to bridge my vitamin C gap") for ideas just for that one\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
   '• "book an online appointment Tuesday evening" to request a real consultation\n' +
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
+  '• /documents to pull back a saved medical report or prescription (tap "📄 My documents"), or /latestreport / /latestprescription for just the newest one -- these are read-only here, still uploaded from the website\n' +
   '• /nudges to turn daily check-in reminders on or off\n' +
   '• /unlink to disconnect this chat from your NutriGap account';
 
@@ -1452,6 +1650,7 @@ const BUTTON_TO_COMMAND = {
   '📊 My gap': '/gap',
   '🍽 Meal ideas': '/meals',
   '📅 Appointments': '/appointments',
+  '📄 My documents': '/documents',
   '❓ Help': '/help',
 };
 
@@ -1619,6 +1818,38 @@ module.exports = async function handler(req, res) {
       await logMessage(userId, chatId, 'in', text, 'appointment');
       await logMessage(userId, chatId, 'out', reply, 'appointment');
       await sendMessage(chatId, reply);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/documents') {
+      await logMessage(userId, chatId, 'in', text, 'documents');
+      const { text: reply, keyboard } = await documentsListReply(userId);
+      await logMessage(userId, chatId, 'out', reply, 'documents');
+      await sendMessage(chatId, reply, keyboard);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/latestreport') {
+      await logMessage(userId, chatId, 'in', text, 'documents');
+      await sendTyping(chatId);
+      const reports = await loadRecentReports(userId, 1);
+      if (reports.length === 0) {
+        await sendMessage(chatId, "You don't have any saved medical reports yet -- save one from the website's Medical reports tab first.");
+      } else {
+        await sendSavedReport(chatId, reports[0]);
+      }
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/latestprescription') {
+      await logMessage(userId, chatId, 'in', text, 'documents');
+      await sendTyping(chatId);
+      const prescriptions = await loadRecentPrescriptions(userId, 1);
+      if (prescriptions.length === 0) {
+        await sendMessage(chatId, "You don't have any saved prescriptions yet -- attach one to a visit from the website's Doctor visits tab first.");
+      } else {
+        await sendVisitFile(chatId, prescriptions[0]);
+      }
       res.status(200).json({ ok: true });
       return;
     }
