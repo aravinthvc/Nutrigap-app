@@ -29,6 +29,12 @@ const nc = require('../lib/nutrition-core');
 const { callDietitianModel } = require('../lib/dietitian-agent');
 
 const TELEGRAM_API = 'https://api.telegram.org/bot' + process.env.TELEGRAM_BOT_TOKEN;
+// Only needed to BUILD a t.me deep link (e.g. for /invite) -- the webhook
+// itself never needs its own username for anything else. Set a
+// TELEGRAM_BOT_USERNAME env var in Vercel with the real @username (no "@"),
+// same place TELEGRAM_BOT_TOKEN already lives; same placeholder convention
+// as index.html's TELEGRAM_BOT_USERNAME constant, which needs the same value.
+const TELEGRAM_BOT_USERNAME = process.env.TELEGRAM_BOT_USERNAME || 'YourNutriGapBot';
 const APPT_TIME_WINDOWS = ['Morning (9am-12pm)', 'Afternoon (12pm-4pm)', 'Evening (4pm-8pm)'];
 const MEAL_VALUES = ['breakfast', 'lunch', 'dinner', 'snack'];
 const MEAL_OPTIONS = [
@@ -49,7 +55,8 @@ const MEAL_OPTIONS = [
 const MAIN_MENU_KEYBOARD = [
   ['📊 My gap', '🍽 Meal ideas'],
   ['📝 Log a meal', '📅 Appointments'],
-  ['📄 My documents', '❓ Help'],
+  ['📄 My documents', '👥 Invite friends'],
+  ['❓ Help'],
 ];
 
 // `keyboard`, when given, is an array of rows of {text, callback_data} --
@@ -177,6 +184,35 @@ async function findLink(chatId) {
 async function handleLinking(chatId, text, from) {
   const parts = text.trim().split(/\s+/);
   const code = parts[0] === '/start' ? (parts[1] || '') : (/^[A-Z0-9]{6}$/i.test(text.trim()) ? text.trim() : '');
+
+  // A referral deep link (`/start ref_<code>`, from someone's "Invite
+  // friends" link) is a different namespace from a website linking code --
+  // intercept it before the telegram_link_codes lookup below, which would
+  // otherwise just dead-end with "that code doesn't match anything." The
+  // resolved code rides along in the "Get started" button's own
+  // callback_data (see handleCallbackQuery's 'ob:begin' branch), since
+  // there's no telegram_links row yet to persist it on at this point.
+  if (code && /^ref_/i.test(code)) {
+    const refCode = code.slice(4).toUpperCase();
+    let referrerFound = false;
+    if (refCode) {
+      try {
+        const rows = await db.select('profiles', {
+          columns: 'user_id', filters: ['referral_code=eq.' + encodeURIComponent(refCode)], limit: 1,
+        });
+        referrerFound = !!(rows && rows[0]);
+      } catch (e) { console.error('Referral code lookup failed:', e.message); }
+    }
+    const beginCallback = referrerFound ? `ob:begin:ref:${refCode}` : 'ob:begin';
+    await sendMessage(chatId,
+      "Hi! I'm the NutriGap AI agent." + (referrerFound ? ' Looks like a friend sent you.' : '') + " This chat isn't set up yet -- two ways to fix that:",
+      [
+        [{ text: '🚀 Get started -- no account needed', callback_data: beginCallback }],
+        [{ text: '🔗 I already have a NutriGap account', callback_data: 'ob:have_account' }],
+      ]
+    );
+    return;
+  }
 
   if (!code) {
     await sendMessage(chatId,
@@ -338,7 +374,7 @@ async function askOnboardingStep(chatId, state) {
   await sendMessage(chatId, text, keyboard);
 }
 
-async function createSelfServeAccount(chatId, from) {
+async function createSelfServeAccount(chatId, from, refCode) {
   const syntheticEmail = `tg-${chatId}-${crypto.randomBytes(4).toString('hex')}@telegram.invalid`;
   const throwawayPassword = crypto.randomBytes(12).toString('hex');
   let authUser;
@@ -358,7 +394,153 @@ async function createSelfServeAccount(chatId, from) {
     source: 'telegram_selfserve',
     onboarding_state: { step: 'name', answers: {} },
   }], { returning: false });
+
+  if (refCode) {
+    try { await recordTelegramReferral(userId, refCode); }
+    catch (e) { console.error('Referral attribution failed (non-fatal):', e.message); }
+  }
   return userId;
+}
+
+// ---------- Referrals (social-only invite program) ----------
+//
+// Mirrors the website's own referral_code / referrals setup (see
+// add_referrals.sql and index.html's "Referrals / invite link" section) --
+// same one code per person, same purely-social framing (no reward/credit
+// granted), just resolved and written with the webhook's service-role
+// privileges instead of going through api/record-referral.js, since this
+// side already has everything it needs server-side.
+
+function generateReferralCodeTG() {
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I -- avoids visual confusion if read aloud or retyped
+  let code = '';
+  for (let i = 0; i < 7; i++) code += alphabet[Math.floor(Math.random() * alphabet.length)];
+  return code;
+}
+
+// Returns the person's existing referral code, or generates and saves a new
+// one -- but only when a `profiles` row already exists for them (nothing to
+// attach a code to otherwise; a mid-onboarding Telegram user or a website
+// signup that never touched the Profile tab has no row yet).
+async function ensureReferralCode(userId) {
+  const rows = await db.select('profiles', { columns: 'referral_code', filters: ['user_id=eq.' + userId], limit: 1 });
+  const row = rows && rows[0];
+  if (!row) return null;
+  if (row.referral_code) return row.referral_code;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const code = generateReferralCodeTG();
+    try {
+      await db.update('profiles', ['user_id=eq.' + userId], { referral_code: code });
+      return code;
+    } catch (e) {
+      if (!/duplicate|unique/i.test(e.message || '')) throw e;
+      // else: collision against the DB's unique constraint -- astronomically
+      // unlikely at this alphabet/length, but retry with a fresh code.
+    }
+  }
+  return null;
+}
+
+// Resolves a referral code to its owner and records the credit -- the same
+// self-referral guard and referred-user-is-unique idempotency as
+// api/record-referral.js. Also notifies the referrer right away if they're
+// themselves reachable on Telegram, since seeing an invite actually land is
+// what makes someone send a second one.
+async function recordTelegramReferral(referredUserId, refCode) {
+  const rows = await db.select('profiles', {
+    columns: 'user_id', filters: ['referral_code=eq.' + encodeURIComponent(refCode)], limit: 1,
+  });
+  const referrer = rows && rows[0];
+  if (!referrer || referrer.user_id === referredUserId) return;
+
+  const existing = await db.select('referrals', {
+    columns: 'id', filters: ['referred_user_id=eq.' + encodeURIComponent(referredUserId)], limit: 1,
+  });
+  if (existing && existing[0]) return;
+
+  await db.insert('referrals', [{
+    referrer_user_id: referrer.user_id, referred_user_id: referredUserId, source: 'telegram',
+  }], { returning: false });
+
+  try {
+    const referrerLinks = await db.select('telegram_links', {
+      columns: 'chat_id', filters: ['user_id=eq.' + referrer.user_id], limit: 1,
+    });
+    const referrerChatId = referrerLinks && referrerLinks[0] && referrerLinks[0].chat_id;
+    if (referrerChatId) {
+      await sendMessage(referrerChatId, "🎉 Someone just joined NutriGap through your invite link! Send /invite any time to see your link again.");
+    }
+  } catch (e) { console.error('Could not notify referrer:', e.message); }
+}
+
+async function inviteReply(userId) {
+  const code = await ensureReferralCode(userId);
+  if (!code) {
+    return "You'll need to finish setting up your profile first (on the website, or by answering a few quick questions here) before I can make your invite link -- then send /invite again.";
+  }
+  const countRows = await db.select('referrals', { columns: 'id', filters: ['referrer_user_id=eq.' + userId] });
+  const count = (countRows || []).length;
+  const countLine = count > 0
+    ? `${count} friend${count === 1 ? '' : 's'} joined through your invite so far 🎉`
+    : "Forward this to a friend -- when they join, I'll let you know.";
+  const lines = [`Your invite link:`];
+  if (TELEGRAM_BOT_USERNAME && TELEGRAM_BOT_USERNAME !== 'YourNutriGapBot') {
+    lines.push(`https://t.me/${TELEGRAM_BOT_USERNAME}?start=ref_${code}`);
+  } else {
+    // Bot username not configured server-side yet (see the
+    // TELEGRAM_BOT_USERNAME constant near the top of this file) -- the
+    // website link still works either way, so this never fully dead-ends.
+    lines.push("(Telegram link isn't set up yet -- use the website link below for now.)");
+  }
+  lines.push('', countLine, '', `Works on the website too: nutrigap-app.vercel.app/?ref=${code}`);
+  return lines.join('\n');
+}
+
+async function weeklyRecapReply(userId) {
+  const todayIST = nc.istDateStr(new Date());
+  const days = [];
+  for (let i = 0; i < 7; i++) days.push(nc.istDateStr(new Date(Date.now() - i * 24 * 60 * 60 * 1000)));
+  const startStr = days[days.length - 1], endStr = days[0];
+
+  const [allRows, weekRows] = await Promise.all([
+    db.select('diet_entries', { columns: 'entry_date', filters: ['user_id=eq.' + userId] }),
+    db.select('diet_entries', {
+      columns: 'entry_date',
+      filters: ['user_id=eq.' + userId, 'entry_date=gte.' + startStr, 'entry_date=lte.' + endStr],
+    }),
+  ]);
+
+  const logged = new Set((allRows || []).map(r => r.entry_date));
+  let streakCurrent = 0, streakBest = 0;
+  if (logged.size > 0) {
+    const loggedToday = logged.has(todayIST);
+    let cursor = new Date();
+    if (!loggedToday) cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000);
+    while (logged.has(nc.istDateStr(cursor))) { streakCurrent++; cursor = new Date(cursor.getTime() - 24 * 60 * 60 * 1000); }
+    const sorted = Array.from(logged).sort();
+    let run = 0, prev = null;
+    sorted.forEach(d => {
+      run = (prev && Math.round((new Date(d) - new Date(prev)) / 86400000) === 1) ? run + 1 : 1;
+      streakBest = Math.max(streakBest, run);
+      prev = d;
+    });
+  }
+
+  const loggedDaysThisWeek = new Set((weekRows || []).map(r => r.entry_date)).size;
+  const mealsThisWeek = (weekRows || []).length;
+  const code = await ensureReferralCode(userId);
+
+  const lines = [
+    '📊 Your NutriGap week',
+    '',
+    `🔥 ${streakCurrent}-day streak${streakBest > streakCurrent ? ` (best: ${streakBest})` : ''}`,
+    `✅ Logged ${loggedDaysThisWeek}/7 days this week`,
+    `🍽 ${mealsThisWeek} meal${mealsThisWeek === 1 ? '' : 's'} tracked`,
+  ];
+  if (code) {
+    lines.push('', "Forward this to a friend -- here's your invite link:", `nutrigap-app.vercel.app/?ref=${code}`);
+  }
+  return lines.join('\n');
 }
 
 // Tries to attach a real email (+ a temporary password) to the synthetic
@@ -407,6 +589,10 @@ async function finalizeOnboarding(chatId, userId, answers) {
 
   try { await db.authAdminUpdateUser(userId, { user_metadata: { full_name: answers.name } }); }
   catch (e) { console.error('Could not save display name:', e.message); }
+
+  // Best-effort: give them their own invite code right away too, same as a
+  // website signup gets the first time they open "Invite friends."
+  try { await ensureReferralCode(userId); } catch (e) { console.error('Could not generate referral code:', e.message); }
 
   const rawEmail = String(answers.email || '');
   const wantsEmail = rawEmail && rawEmail.toLowerCase() !== 'skip';
@@ -471,10 +657,11 @@ async function handleCallbackQuery(cq) {
   await answerCallbackQuery(cq.id);
   if (cq.message && cq.message.message_id) await clearKeyboard(chatId, cq.message.message_id);
 
-  if (data === 'ob:begin') {
+  if (data === 'ob:begin' || data.startsWith('ob:begin:ref:')) {
     const existing = await findLink(chatId);
     if (existing) { await sendMessage(chatId, "This chat's already set up -- send /help to see what I can do."); return; }
-    const userId = await createSelfServeAccount(chatId, cq.from);
+    const refCode = data.startsWith('ob:begin:ref:') ? data.slice('ob:begin:ref:'.length) : null;
+    const userId = await createSelfServeAccount(chatId, cq.from, refCode);
     if (!userId) { await sendMessage(chatId, "Something went wrong setting you up -- try again in a moment."); return; }
     await askOnboardingStep(chatId, { step: 'name', answers: {} });
     return;
@@ -970,7 +1157,7 @@ const LOG_FLOW_ESCAPE_COMMANDS = new Set([
   '/start', '/help', '/gap', '/today', '/meals', '/ideas', '/appointments',
   '/unlink', '/nudges', '/nudges on', '/nudges off', '/log',
   '/documents', '/latestreport', '/latestprescription',
-  '/uploadreport', '/uploadvisit',
+  '/uploadreport', '/uploadvisit', '/invite', '/recap',
 ]);
 function isEscapeFromLogFlow(text) {
   if (!text) return false;
@@ -2134,6 +2321,8 @@ const HELP_TEXT =
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
   '• /documents to pull back a saved medical report or prescription (tap "📄 My documents"), or /latestreport / /latestprescription for just the newest one\n' +
   '• /uploadreport to send a photo or PDF of a lab report and have me read the values off it (same extraction as the website -- facts from the document only, never a diagnosis), or /uploadvisit to save a prescription/bill/note against a doctor visit -- both also start from the buttons under "📄 My documents"\n' +
+  '• /invite (or tap "👥 Invite friends") for your personal invite link -- works on Telegram and the website\n' +
+  '• /recap for a quick shareable summary of your week (streak, days logged) with your invite link attached\n' +
   '• /nudges to turn daily check-in reminders on or off\n' +
   '• /unlink to disconnect this chat from your NutriGap account';
 
@@ -2148,6 +2337,7 @@ const BUTTON_TO_COMMAND = {
   '🍽 Meal ideas': '/meals',
   '📅 Appointments': '/appointments',
   '📄 My documents': '/documents',
+  '👥 Invite friends': '/invite',
   '❓ Help': '/help',
 };
 
@@ -2380,6 +2570,23 @@ module.exports = async function handler(req, res) {
       await logMessage(userId, chatId, 'in', text, 'documents');
       await setPendingUpload(chatId, { type: 'visit', step: 'visit_date', visit: {} });
       await sendMessage(chatId, 'What date was the visit? e.g. "2026-09-10" or "10 Sept". Send /documents any time to cancel.');
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/invite') {
+      await logMessage(userId, chatId, 'in', text, 'invite');
+      const reply = await inviteReply(userId);
+      await logMessage(userId, chatId, 'out', reply, 'invite');
+      await sendMessage(chatId, reply);
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/recap') {
+      await logMessage(userId, chatId, 'in', text, 'invite');
+      await sendTyping(chatId);
+      const reply = await weeklyRecapReply(userId);
+      await logMessage(userId, chatId, 'out', reply, 'invite');
+      await sendMessage(chatId, reply);
       res.status(200).json({ ok: true });
       return;
     }
