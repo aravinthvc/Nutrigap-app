@@ -167,7 +167,7 @@ async function recentContext(userId, limit) {
 // came from the website's code flow and never needed it).
 async function findLink(chatId) {
   const rows = await db.select('telegram_links', {
-    columns: 'user_id,onboarding_state,pending_log,source,nudges_enabled',
+    columns: 'user_id,onboarding_state,pending_log,pending_upload,source,nudges_enabled',
     filters: ['chat_id=eq.' + encodeURIComponent(String(chatId))],
     limit: 1,
   });
@@ -511,6 +511,113 @@ async function handleCallbackQuery(cq) {
     return;
   }
 
+  if (data.startsWith('uploadstart:')) {
+    const kind = data.split(':')[1]; // 'report' | 'visit'
+    await clearPendingLog(chatId);
+    if (kind === 'report') {
+      await setPendingUpload(chatId, { type: 'report', step: 'awaiting_file' });
+      await sendMessage(chatId, "Send me a photo or PDF of your lab report, and I'll read the values off it. Send /documents any time to cancel.");
+    } else if (kind === 'visit') {
+      await setPendingUpload(chatId, { type: 'visit', step: 'visit_date', visit: {} });
+      await sendMessage(chatId, 'What date was the visit? e.g. "2026-09-10" or "10 Sept". Send /documents any time to cancel.');
+    }
+    return;
+  }
+
+  if (data.startsWith('upload:')) {
+    const state = link.pending_upload;
+    if (!state || !state.step) {
+      await sendMessage(chatId, "That button doesn't apply anymore -- send /documents to start again.");
+      return;
+    }
+    const parts = data.split(':'); // upload:<kind>:<value>
+    const kind = parts[1];
+    const value = parts.slice(2).join(':');
+
+    if (kind === 'reportsave') {
+      if (state.type !== 'report' || state.step !== 'confirm') {
+        await sendMessage(chatId, "That's expired -- send /uploadreport to try again.");
+        return;
+      }
+      if (value === 'no') {
+        await clearPendingUpload(chatId);
+        await sendMessage(chatId, 'Okay, discarded -- nothing was saved. Send /uploadreport any time to try again.');
+        return;
+      }
+      await sendTyping(chatId);
+      try {
+        const filePath = await telegramGetFilePath(state.fileId);
+        const buffer = await downloadTelegramFileBytes(filePath);
+        const path = `${link.user_id}/medical-reports/${Date.now()}-${sanitizeFileNameTG(state.fileName)}`;
+        await db.storageUpload(DOCS_BUCKET, path, buffer, state.mimeType);
+        await db.insert('medical_reports', [{
+          user_id: link.user_id,
+          patient_name: state.extracted.patientName || null,
+          report_date: state.extracted.reportDate || null,
+          file_name: state.fileName || null,
+          markers: state.extracted.markers || [],
+          storage_path: path,
+        }], { returning: false });
+        await clearPendingUpload(chatId);
+        await sendMessage(chatId, 'Saved to your reports. You can share it anytime from the website, or send /latestreport to get it back here.');
+      } catch (e) {
+        console.error('Could not save uploaded report:', e.message);
+        await sendMessage(chatId, "Couldn't save that just now -- try again.",
+          [[{ text: '✅ Save', callback_data: 'upload:reportsave:yes' }, { text: '❌ Discard', callback_data: 'upload:reportsave:no' }]]);
+      }
+      return;
+    }
+
+    if (kind === 'doctype') {
+      if (state.type !== 'visit' || state.step !== 'doc_type') {
+        await sendMessage(chatId, "That button doesn't apply anymore -- send /documents to start again.");
+        return;
+      }
+      let newState = { ...state, docType: value };
+      if (!newState.visit.id) {
+        try {
+          const inserted = await db.insert('doctor_visits', [{
+            user_id: link.user_id,
+            visit_date: state.visit.visit_date,
+            doctor_name: state.visit.doctor_name || null,
+            specialty: state.visit.specialty || null,
+            clinic_name: state.visit.clinic_name || null,
+            visit_notes: null,
+            follow_up_date: null,
+          }]);
+          const visitId = inserted && inserted[0] && inserted[0].id;
+          if (!visitId) throw new Error('No id returned from doctor_visits insert');
+          newState = { ...newState, visit: { ...newState.visit, id: visitId } };
+        } catch (e) {
+          console.error('Could not save visit:', e.message);
+          await clearPendingUpload(chatId);
+          await sendMessage(chatId, "Couldn't save the visit just now -- send /uploadvisit to try again.");
+          return;
+        }
+      }
+      newState.step = 'awaiting_file';
+      await setPendingUpload(chatId, newState);
+      await sendMessage(chatId, 'Now send the file (photo or PDF).');
+      return;
+    }
+
+    if (kind === 'morefiles') {
+      if (state.type !== 'visit' || state.step !== 'more_files') {
+        await sendMessage(chatId, "That button doesn't apply anymore -- send /documents to start again.");
+        return;
+      }
+      if (value === 'yes') {
+        await setPendingUpload(chatId, { ...state, step: 'doc_type' });
+        await askDocTypeButtons(chatId);
+      } else {
+        await clearPendingUpload(chatId);
+        await sendMessage(chatId, "All set -- the visit's saved with its file(s). See it on the website's Doctor visits tab any time, or pull a prescription back here with /latestprescription.");
+      }
+      return;
+    }
+    return;
+  }
+
   if (!link.onboarding_state || !link.onboarding_state.step) {
     await sendMessage(chatId, "That button doesn't apply anymore -- send /help to see what I can do.");
     return;
@@ -743,6 +850,19 @@ async function downloadTelegramFileAsBase64(filePath) {
   return { base64: buf.toString('base64'), mediaType };
 }
 
+// Plain-bytes version used by the "upload a report / prescription from
+// Telegram" flow below -- unlike downloadTelegramFileAsBase64 above (which
+// only ever deals with meal photos and always assumes an image type from
+// the file extension), a medical document can be a PDF, and Telegram tells
+// us its real mime_type directly on message.document, so there's no
+// extension-sniffing needed here -- the caller already knows the type.
+async function downloadTelegramFileBytes(filePath) {
+  const url = 'https://api.telegram.org/file/bot' + process.env.TELEGRAM_BOT_TOKEN + '/' + filePath;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('Telegram file download failed: ' + res.status);
+  return Buffer.from(await res.arrayBuffer());
+}
+
 // Looks at one meal photo and tries to say, in plain language, what's on
 // the plate. Returns {confident, description, note} -- description is
 // only ever non-empty when confident is true, and note is always a short,
@@ -850,8 +970,20 @@ const LOG_FLOW_ESCAPE_COMMANDS = new Set([
   '/start', '/help', '/gap', '/today', '/meals', '/ideas', '/appointments',
   '/unlink', '/nudges', '/nudges on', '/nudges off', '/log',
   '/documents', '/latestreport', '/latestprescription',
+  '/uploadreport', '/uploadvisit',
 ]);
 function isEscapeFromLogFlow(text) {
+  if (!text) return false;
+  if (text === '📝 Log a meal') return true;
+  const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
+  return LOG_FLOW_ESCAPE_COMMANDS.has(lower);
+}
+
+// Same idea as isEscapeFromLogFlow above, for the "upload a report /
+// prescription" guided flow below -- shares the same command set, since
+// any of those recognized commands/buttons should equally interrupt
+// whichever guided flow happens to be in progress.
+function isEscapeFromUploadFlow(text) {
   if (!text) return false;
   if (text === '📝 Log a meal') return true;
   const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
@@ -1556,17 +1688,26 @@ async function loadAllDocItems(userId) {
   return items;
 }
 
+// Shown once at the top of the first page of the list -- lets someone add a
+// new report or prescription right from Telegram instead of only ever being
+// able to pull back what was already saved on the website. See "Upload a
+// report / prescription from Telegram" below for what these start.
+const UPLOAD_START_BUTTONS = [
+  [{ text: '⬆️ Upload a report', callback_data: 'uploadstart:report' }],
+  [{ text: '⬆️ Upload a prescription / visit file', callback_data: 'uploadstart:visit' }],
+];
+
 async function documentsListReply(userId, offset) {
   offset = Number.isFinite(offset) && offset > 0 ? offset : 0;
   const items = await loadAllDocItems(userId);
   if (items.length === 0) {
     return {
-      text: "You don't have any saved medical reports or prescriptions yet -- those are saved from the website's Medical reports and Doctor visits tabs.",
-      keyboard: null,
+      text: "You don't have any saved medical reports or prescriptions yet -- tap below to add one from here, or save it from the website's Medical reports / Doctor visits tabs.",
+      keyboard: UPLOAD_START_BUTTONS,
     };
   }
   const page = items.slice(offset, offset + DOCS_PAGE_SIZE);
-  const keyboard = page.map(it => [it.button]);
+  const keyboard = offset === 0 ? [...UPLOAD_START_BUTTONS, ...page.map(it => [it.button])] : page.map(it => [it.button]);
   const shownSoFar = offset + page.length;
   const remaining = items.length - shownSoFar;
   if (remaining > 0) {
@@ -1575,7 +1716,7 @@ async function documentsListReply(userId, offset) {
   const rangeLabel = items.length <= DOCS_PAGE_SIZE
     ? `Your ${items.length} saved document${items.length === 1 ? '' : 's'} (reports and prescriptions)`
     : `Documents ${offset + 1}–${shownSoFar} of ${items.length} (reports and prescriptions)`;
-  return { text: `${rangeLabel} -- tap one to get it sent here:`, keyboard };
+  return { text: `${rangeLabel} -- tap one to get it sent here, or upload a new one below:`, keyboard };
 }
 
 async function handleDocumentButton(chatId, userId, data) {
@@ -1606,6 +1747,333 @@ async function handleDocumentButton(chatId, userId, data) {
   } catch (e) {
     console.error('Document fetch/send failed:', e.message);
     await sendMessage(chatId, "Couldn't fetch that file just now -- try again in a moment.");
+  }
+}
+
+// ---------- Upload a report / prescription from Telegram ----------
+//
+// Mirrors the website's own upload paths -- a lab report goes through the
+// same Claude extraction-only read (never a diagnosis, never a guessed
+// reference range) that api/read-report.js does, a prescription/bill/note
+// goes through the same "create a visit, then attach a file to it" shape
+// the website's "Add visit" form does -- just as a short guided
+// conversation instead of a form, since Telegram has no form fields.
+// State lives in telegram_links.pending_upload (jsonb), the same pattern as
+// pending_log: {type: 'report'|'visit', step, ...}. A report's steps are
+// 'awaiting_file' -> 'confirm' (shows the extracted summary, waits for a
+// Save/Discard tap). A visit's steps are 'visit_date' -> 'doctor_name' ->
+// 'specialty' -> 'clinic_name' -> 'doc_type' -> 'awaiting_file' ->
+// 'more_files' (loops back to 'doc_type' for another file, or finishes).
+//
+// The extraction system prompt below is a deliberate copy of
+// api/read-report.js's -- same highest-sensitivity rules (extraction only,
+// no diagnosis, no inferred reference ranges) -- rather than importing it,
+// matching this codebase's existing choice (see formatValueUnitTG above) to
+// duplicate small, stable pieces of logic across files instead of adding
+// shared-module plumbing between the website's API and the bot.
+
+const UPLOAD_ALLOWED_MIME = ['application/pdf', 'image/jpeg', 'image/png', 'image/webp'];
+
+function sanitizeFileNameTG(name) {
+  return (name || 'file').replace(/[^a-zA-Z0-9.\-_]/g, '_');
+}
+
+async function setPendingUpload(chatId, state) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_upload: state });
+}
+
+async function clearPendingUpload(chatId) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_upload: null });
+}
+
+// Reads whichever of message.document / message.photo is present and
+// normalizes it to one shape. A photo is always a plain image (Telegram
+// re-encodes it as JPEG), so it's always "supported"; a document reports
+// its own mime_type, which is checked against the same four types
+// read-report.js accepts.
+function resolveIncomingFile(message) {
+  if (message.document) {
+    const mime = message.document.mime_type || '';
+    return {
+      fileId: message.document.file_id,
+      mimeType: mime,
+      fileName: message.document.file_name || 'document',
+      supported: UPLOAD_ALLOWED_MIME.includes(mime),
+    };
+  }
+  if (message.photo && message.photo.length) {
+    const largest = message.photo[message.photo.length - 1];
+    return { fileId: largest.file_id, mimeType: 'image/jpeg', fileName: `photo-${Date.now()}.jpg`, supported: true };
+  }
+  return null;
+}
+
+// A more permissive date parser than the meal-logging flow's
+// parseLoggedDate -- a doctor visit can reasonably be years in the past
+// (unlike a meal, which is only ever backfilled a few months at most), and
+// a near-future date is valid too (an upcoming/just-scheduled visit), so
+// the bounds here are deliberately wide rather than reusing that function's
+// 90-day/no-future rule.
+function parseFlexibleDateTG(text) {
+  const t = String(text || '').trim();
+  const now = new Date();
+  const minDate = nc.istDateStr(new Date(now.getTime() - 15 * 365 * 24 * 60 * 60 * 1000));
+  const maxDate = nc.istDateStr(new Date(now.getTime() + 180 * 24 * 60 * 60 * 1000));
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(t)) {
+    return (t >= minDate && t <= maxDate) ? t : null;
+  }
+  const year = now.getFullYear();
+  const parsed = new Date(t + ' ' + year + ' UTC');
+  if (Number.isNaN(parsed.getTime())) return null;
+  let candidate = nc.istDateStr(parsed);
+  if (candidate > maxDate) {
+    const lastYear = new Date(Date.UTC(year - 1, parsed.getUTCMonth(), parsed.getUTCDate()));
+    candidate = nc.istDateStr(lastYear);
+  }
+  return (candidate >= minDate && candidate <= maxDate) ? candidate : null;
+}
+
+const REPORT_EXTRACTION_SYSTEM_PROMPT_TG = `You are a document-reading assistant embedded in a health app called NutriGap.
+You will be shown an image or PDF of a lab or medical report. Your ONLY job is to extract values that are explicitly printed in the document -- nothing else.
+
+Rules you must follow without exception:
+- Extract only tests/markers that have an explicit value printed in the document. Never infer, estimate, or guess a value that isn't printed.
+- For each marker, extract: "name" (as printed), "value" (as printed, including its unit if attached), "unit" (separately, if identifiable), and "referenceRange" EXACTLY as printed for that marker.
+- If no reference range is printed for a given marker, set "referenceRange" to null. NEVER supply a reference range from general medical knowledge -- only use what is printed in this specific document.
+- Set "flag" to "Low", "Normal", or "High" ONLY by comparing the printed value against the printed reference range for that same marker. If no reference range is printed, "flag" MUST be "Unknown" -- do not use outside knowledge to guess what's normal.
+- Do not diagnose any condition. Do not explain what a marker means medically. Do not speculate on causes. Do not recommend treatment, supplements, or lifestyle changes.
+- Do not comment on the person's overall health status or how "concerning" any result is.
+- If the document does not appear to be any kind of medical or lab report at all (e.g. it's a photo of something unrelated), set "notAReport" to true and return an empty "markers" array.
+- If you can find a report date printed on the document, include it as "reportDate" (as printed); otherwise null.
+- If you can find the patient's name printed on the document, include it as "patientName" (as printed); otherwise null.
+
+Respond with ONLY a JSON object -- no markdown, no code fences, no commentary before or after -- in exactly this shape:
+{"notAReport": false, "reportDate": "... or null", "patientName": "... or null", "markers": [{"name": "...", "value": "...", "unit": "... or null", "referenceRange": "... or null", "flag": "Low"}]}`;
+
+async function extractReportFromFileTG(base64, mediaType) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) throw new Error("Something's misconfigured on the server side -- Aravinth's been notified.");
+
+  const fileBlock = mediaType === 'application/pdf'
+    ? { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } }
+    : { type: 'image', source: { type: 'base64', media_type: mediaType, data: base64 } };
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 24000,
+      system: REPORT_EXTRACTION_SYSTEM_PROMPT_TG,
+      messages: [{
+        role: 'user',
+        content: [fileBlock, { type: 'text', text: 'Extract the lab values from this report, following your instructions exactly.' }],
+      }],
+    }),
+  });
+  if (!response.ok) {
+    const errText = await response.text();
+    let message = errText;
+    try { const errJson = JSON.parse(errText); if (errJson && errJson.error && errJson.error.message) message = errJson.error.message; } catch (e) { /* not JSON */ }
+    throw new Error(message);
+  }
+  const data = await response.json();
+  const textBlock = (data.content || []).find(b => b.type === 'text');
+  const rawText = (textBlock && textBlock.text) || '';
+  let cleaned = rawText.replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{'), end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
+
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch (e) {
+    if (data.stop_reason === 'max_tokens') {
+      const err = new Error('This report has more values than I can read in one pass here -- try uploading it from the website instead (it can split big reports automatically).');
+      err.truncated = true;
+      throw err;
+    }
+    throw new Error("couldn't make sense of the AI's response for this file");
+  }
+  parsed.markers = (parsed.markers || []).map(m => ({ ...m, flag: m.referenceRange ? m.flag : 'Unknown' }));
+  return parsed;
+}
+
+async function handleReportFileReceived(chatId, userId, state, message) {
+  const resolved = resolveIncomingFile(message);
+  if (!resolved || !resolved.supported) {
+    await sendMessage(chatId, "I can only read PDF, JPEG, PNG, or WEBP files for reports -- try a different format, or upload it from the website instead.");
+    return;
+  }
+  await sendTyping(chatId);
+
+  let buffer;
+  try {
+    const filePath = await telegramGetFilePath(resolved.fileId);
+    buffer = await downloadTelegramFileBytes(filePath);
+  } catch (e) {
+    console.error('Could not download report file from Telegram:', e.message);
+    await sendMessage(chatId, "Couldn't download that file from Telegram -- try sending it again.");
+    return;
+  }
+
+  const base64 = buffer.toString('base64');
+  // Same reachable-size guard as api/read-report.js -- Vercel's own request
+  // body limit would reject anything bigger before this code even runs.
+  if (base64.length > 4_400_000) {
+    await sendMessage(chatId, "That file's a bit large for me to read here -- try a smaller file, or upload it from the website instead (it can split big PDFs automatically).");
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = await extractReportFromFileTG(base64, resolved.mimeType);
+  } catch (e) {
+    console.error('Report extraction failed:', e.message);
+    await clearPendingUpload(chatId);
+    await sendMessage(chatId, `Couldn't read that file just now -- ${e.message || 'try again in a moment'}. Send /uploadreport to try again.`);
+    return;
+  }
+
+  if (parsed.notAReport) {
+    await sendMessage(chatId, "That doesn't look like a medical/lab report to me, so I didn't save anything. Send a clearer photo/PDF, or /documents to cancel.");
+    return;
+  }
+
+  const markers = parsed.markers || [];
+  const outOfRange = markers.filter(m => m.flag === 'Low' || m.flag === 'High').length;
+  const noRange = markers.filter(m => m.flag === 'Unknown').length;
+  const lines = markers.slice(0, 25).map(m => {
+    const val = formatValueUnitTG(m.value, m.unit);
+    const flag = m.flag && m.flag !== 'Unknown' ? ` — ${m.flag}` : '';
+    return `• ${m.name}: ${val}${flag}`;
+  });
+  const more = markers.length > 25 ? `\n...and ${markers.length - 25} more (full table on the website after saving)` : '';
+
+  let summary = `Read ${markers.length} value${markers.length === 1 ? '' : 's'} from your report.`;
+  if (outOfRange > 0) summary += ` ${outOfRange} sit outside the range printed on the report -- that's a fact from your document, not a diagnosis.`;
+  if (noRange > 0) summary += ` ${noRange} had no reference range printed.`;
+  if (parsed.reportDate) summary += `\nReport date: ${parsed.reportDate}`;
+  if (parsed.patientName) summary += `\nPatient: ${parsed.patientName}`;
+  const body = lines.length ? `\n\n${lines.join('\n')}${more}` : '';
+
+  await setPendingUpload(chatId, {
+    type: 'report', step: 'confirm',
+    fileId: resolved.fileId, mimeType: resolved.mimeType, fileName: resolved.fileName,
+    extracted: { reportDate: parsed.reportDate || null, patientName: parsed.patientName || null, markers },
+  });
+  await sendMessage(chatId, `${summary}${body}\n\nSave this to your reports?`,
+    [[{ text: '✅ Save', callback_data: 'upload:reportsave:yes' }, { text: '❌ Discard', callback_data: 'upload:reportsave:no' }]]);
+}
+
+async function askDocTypeButtons(chatId) {
+  await sendMessage(chatId, 'What kind of file is this?', [
+    [{ text: '💊 Prescription', callback_data: 'upload:doctype:prescription' }],
+    [{ text: '🧾 Bill / receipt', callback_data: 'upload:doctype:bill_receipt' }],
+    [{ text: '📝 Consultation note', callback_data: 'upload:doctype:consultation_note' }],
+    [{ text: '📄 Other', callback_data: 'upload:doctype:other' }],
+  ]);
+}
+
+async function handleVisitTextStep(chatId, userId, state, text) {
+  if (state.step === 'visit_date') {
+    if (!text) { await sendMessage(chatId, 'What date was the visit? e.g. "2026-09-10" or "10 Sept".'); return; }
+    const date = parseFlexibleDateTG(text);
+    if (!date) { await sendMessage(chatId, 'I couldn\'t read that as a date -- try "2026-09-10" or "10 Sept".'); return; }
+    await setPendingUpload(chatId, { ...state, step: 'doctor_name', visit: { ...state.visit, visit_date: date } });
+    await sendMessage(chatId, 'Doctor\'s name? (or type "skip")');
+    return;
+  }
+  if (state.step === 'doctor_name') {
+    const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
+    await setPendingUpload(chatId, { ...state, step: 'specialty', visit: { ...state.visit, doctor_name: value || null } });
+    await sendMessage(chatId, 'Specialty? (or type "skip")');
+    return;
+  }
+  if (state.step === 'specialty') {
+    const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
+    await setPendingUpload(chatId, { ...state, step: 'clinic_name', visit: { ...state.visit, specialty: value || null } });
+    await sendMessage(chatId, 'Clinic or hospital name? (or type "skip")');
+    return;
+  }
+  if (state.step === 'clinic_name') {
+    const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
+    await setPendingUpload(chatId, { ...state, step: 'doc_type', visit: { ...state.visit, clinic_name: value || null } });
+    await askDocTypeButtons(chatId);
+    return;
+  }
+}
+
+async function handleVisitFileReceived(chatId, userId, state, message) {
+  const resolved = resolveIncomingFile(message);
+  if (!resolved || !resolved.supported) {
+    await sendMessage(chatId, 'I can only save PDF, JPEG, PNG, or WEBP files -- try a different format, or use the website instead.');
+    return;
+  }
+  const visitId = state.visit && state.visit.id;
+  if (!visitId) {
+    await clearPendingUpload(chatId);
+    await sendMessage(chatId, "Something went wrong saving the visit -- send /uploadvisit to try again.");
+    return;
+  }
+
+  await sendTyping(chatId);
+  let buffer;
+  try {
+    const filePath = await telegramGetFilePath(resolved.fileId);
+    buffer = await downloadTelegramFileBytes(filePath);
+  } catch (e) {
+    console.error('Could not download visit file from Telegram:', e.message);
+    await sendMessage(chatId, "Couldn't download that file from Telegram -- try sending it again.");
+    return;
+  }
+
+  const path = `${userId}/${visitId}/${Date.now()}-${sanitizeFileNameTG(resolved.fileName)}`;
+  try {
+    await db.storageUpload(DOCS_BUCKET, path, buffer, resolved.mimeType);
+    await db.insert('doctor_visit_files', [{
+      visit_id: visitId, user_id: userId, doc_type: state.docType, storage_path: path, file_name: resolved.fileName,
+    }], { returning: false });
+  } catch (e) {
+    console.error('Could not save visit file:', e.message);
+    await sendMessage(chatId, "Couldn't save that file just now -- try sending it again.");
+    return;
+  }
+
+  await setPendingUpload(chatId, { ...state, step: 'more_files' });
+  await sendMessage(chatId, `Saved as ${DOC_TYPE_LABELS_TG[state.docType] || 'a file'}. Add another file to this visit?`,
+    [[{ text: '➕ Yes, add another', callback_data: 'upload:morefiles:yes' }, { text: '✅ Done', callback_data: 'upload:morefiles:no' }]]);
+}
+
+// Entry point from the main handler below whenever telegram_links.pending_upload
+// has an active step and the incoming message wasn't a recognized escape
+// command. Dispatches purely on state.type/state.step; steps that expect a
+// button tap (report's 'confirm', visit's 'doc_type'/'more_files') just
+// re-prompt on any free text instead of trying to interpret it.
+async function handleUploadFlowMessage(chatId, userId, state, ctx) {
+  const { text, hasPhoto, hasDocument, message } = ctx;
+  if (state.type === 'report') {
+    if (state.step === 'awaiting_file') {
+      if (!hasPhoto && !hasDocument) { await sendMessage(chatId, 'Send a photo or PDF of the report, or /documents to cancel.'); return; }
+      await handleReportFileReceived(chatId, userId, state, message);
+      return;
+    }
+    await sendMessage(chatId, 'Tap "Save" or "Discard" above to continue, or /documents to cancel.');
+    return;
+  }
+  if (state.type === 'visit') {
+    if (state.step === 'visit_date' || state.step === 'doctor_name' || state.step === 'specialty' || state.step === 'clinic_name') {
+      await handleVisitTextStep(chatId, userId, state, text);
+      return;
+    }
+    if (state.step === 'awaiting_file') {
+      if (!hasPhoto && !hasDocument) { await sendMessage(chatId, 'Send a photo or PDF of the file, or /documents to cancel.'); return; }
+      await handleVisitFileReceived(chatId, userId, state, message);
+      return;
+    }
+    await sendMessage(chatId, 'Tap one of the buttons above to continue, or /documents to cancel.');
+    return;
   }
 }
 
@@ -1664,7 +2132,8 @@ const HELP_TEXT =
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
   '• "book an online appointment Tuesday evening" to request a real consultation\n' +
   '• "my appointments" to see what\'s upcoming, or "cancel my appointment" to cancel one\n' +
-  '• /documents to pull back a saved medical report or prescription (tap "📄 My documents"), or /latestreport / /latestprescription for just the newest one -- these are read-only here, still uploaded from the website\n' +
+  '• /documents to pull back a saved medical report or prescription (tap "📄 My documents"), or /latestreport / /latestprescription for just the newest one\n' +
+  '• /uploadreport to send a photo or PDF of a lab report and have me read the values off it (same extraction as the website -- facts from the document only, never a diagnosis), or /uploadvisit to save a prescription/bill/note against a doctor visit -- both also start from the buttons under "📄 My documents"\n' +
   '• /nudges to turn daily check-in reminders on or off\n' +
   '• /unlink to disconnect this chat from your NutriGap account';
 
@@ -1704,13 +2173,14 @@ module.exports = async function handler(req, res) {
 
     const message = update.message;
     const hasPhoto = !!(message && message.photo && message.photo.length);
-    if (!message || (typeof message.text !== 'string' && !hasPhoto)) {
+    const hasDocument = !!(message && message.document);
+    if (!message || (typeof message.text !== 'string' && !hasPhoto && !hasDocument)) {
       res.status(200).json({ ok: true });
       return;
     }
     const chatId = message.chat.id;
     const text = typeof message.text === 'string' ? message.text.trim() : '';
-    if (!text && !hasPhoto) { res.status(200).json({ ok: true }); return; }
+    if (!text && !hasPhoto && !hasDocument) { res.status(200).json({ ok: true }); return; }
 
     const link = await findLink(chatId);
 
@@ -1773,6 +2243,22 @@ module.exports = async function handler(req, res) {
           return;
         }
         await sendMessage(chatId, 'Type what you ate, or send a photo of the meal.');
+        res.status(200).json({ ok: true });
+        return;
+      }
+    }
+
+    // Mid-way through the "upload a report / prescription" guided flow (see
+    // "Upload a report / prescription from Telegram" above) -- same
+    // intercept-before-anything-else pattern as pending_log just above, and
+    // the same escape rule (a recognized command/button drops the half-done
+    // upload instead of trapping the person in it).
+    if (link.pending_upload && link.pending_upload.step) {
+      if (isEscapeFromUploadFlow(text)) {
+        await clearPendingUpload(chatId);
+        // falls through to normal handling below with the original message
+      } else {
+        await handleUploadFlowMessage(chatId, userId, link.pending_upload, { text, hasPhoto, hasDocument, message });
         res.status(200).json({ ok: true });
         return;
       }
@@ -1878,6 +2364,34 @@ module.exports = async function handler(req, res) {
       } else {
         await sendVisitFile(chatId, prescriptions[0]);
       }
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/uploadreport') {
+      await clearPendingLog(chatId);
+      await logMessage(userId, chatId, 'in', text, 'documents');
+      await setPendingUpload(chatId, { type: 'report', step: 'awaiting_file' });
+      await sendMessage(chatId, "Send me a photo or PDF of your lab report, and I'll read the values off it. Send /documents any time to cancel.");
+      res.status(200).json({ ok: true });
+      return;
+    }
+    if (lower === '/uploadvisit') {
+      await clearPendingLog(chatId);
+      await logMessage(userId, chatId, 'in', text, 'documents');
+      await setPendingUpload(chatId, { type: 'visit', step: 'visit_date', visit: {} });
+      await sendMessage(chatId, 'What date was the visit? e.g. "2026-09-10" or "10 Sept". Send /documents any time to cancel.');
+      res.status(200).json({ ok: true });
+      return;
+    }
+
+    // A document (PDF, usually) with no guided flow in progress -- this
+    // only ever means something when the meal-log/upload flows above didn't
+    // already claim it, so there's nothing useful to do with a "cold"
+    // document the way a "cold" photo starts the meal-log flow below:
+    // point them at /uploadreport or /uploadvisit instead of silently
+    // dropping it.
+    if (hasDocument) {
+      await sendMessage(chatId, "I've got a file from you, but I'm not sure what it's for -- send /uploadreport to read it as a lab report, or /uploadvisit to attach it to a doctor visit.");
       res.status(200).json({ ok: true });
       return;
     }
