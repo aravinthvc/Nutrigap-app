@@ -972,6 +972,16 @@
           <div id="telegramCodeHint" class="note" style="margin-top:8px;"></div>
         </div>
       </div>
+
+      <div class="card" id="inviteCard" style="margin-top:20px;">
+        <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Invite friends</h3>
+        <div class="note" id="inviteFriendsCount">Loading…</div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; align-items:center;">
+          <input type="text" id="inviteLinkInput" readonly style="flex:1; min-width:220px; font-family:monospace; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-s); background:var(--paper); color:var(--ink-soft);">
+          <button class="btn ghost small" id="copyInviteLinkBtn">Copy link</button>
+          <button class="btn small" id="shareInviteBtn">Share</button>
+        </div>
+      </div>
     </section>
 
     <!-- DIET LOG -->
@@ -989,6 +999,7 @@
           </div>
           <button class="btn ghost small" id="todayBtn">Jump to today</button>
           <div id="streakBanner" style="margin-left:auto; font-size:13px; color:var(--ink-soft);"></div>
+          <button class="btn ghost small" id="shareProgressBtn" title="Share a progress card with a friend">📤 Share progress</button>
         </div>
       </div>
 
@@ -1577,12 +1588,58 @@ const db = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 let currentUser = null;
 
+// ---------- Referrals: capture ?ref=CODE from an invite link on load ----------
+// Stashed in localStorage (survives a Google OAuth redirect, and an
+// email-confirmation gap) rather than attempted immediately, since there's
+// no account to credit the referral to until signup actually completes --
+// see maybeRecordReferral() below, called once showApp() confirms we have a
+// real logged-in user.
+(function captureReferralCode(){
+  try{
+    const params = new URLSearchParams(location.search);
+    const ref = params.get('ref');
+    if(ref){
+      localStorage.setItem('nutrigap_pending_ref', ref.trim().toUpperCase());
+      const url = new URL(location.href);
+      url.searchParams.delete('ref');
+      history.replaceState({}, '', url.toString());
+    }
+  } catch(e){ /* best-effort only -- a failed capture just means no referral credit, never a broken page */ }
+})();
+
+// Fire-and-forget, non-blocking: resolves a pending ?ref= code (if any)
+// against the new account and records the credit server-side (the browser
+// can only ever read its OWN profile row under RLS, so it can't resolve
+// someone else's referral_code itself -- see api/record-referral.js).
+// Purely a social/vanity counter for now, so failures here are silent and
+// never interrupt signin/signup.
+async function maybeRecordReferral(user){
+  try{
+    const code = localStorage.getItem('nutrigap_pending_ref');
+    if(!code) return;
+    localStorage.removeItem('nutrigap_pending_ref'); // attempted at most once per pending code
+    // Only credit a referral for an account that was JUST created --
+    // created_at and last_sign_in_at land within a couple of minutes of
+    // each other on a brand-new signup (email/password or a first Google
+    // sign-in), but stay far apart for a returning user signing back in
+    // with a stale pending code left over from browsing a friend's link.
+    const created = new Date(user.created_at).getTime();
+    const lastSignIn = new Date(user.last_sign_in_at || user.created_at).getTime();
+    if(!Number.isFinite(created) || Math.abs(lastSignIn - created) > 5 * 60 * 1000) return;
+    await fetch('/api/record-referral', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ code, referredUserId: user.id }),
+    });
+  } catch(e){ console.error('Referral recording failed (non-fatal):', e); }
+}
+
 // ---------- Auth ----------
 function showApp(user){
   currentUser = user;
   document.getElementById('authGate').style.display = 'none';
   document.getElementById('appShell').style.display = 'grid';
   renderUserChip();
+  maybeRecordReferral(user);
   loadFoods()
     .then(loadWeightLogs)
     .then(loadProfile)
@@ -1738,7 +1795,7 @@ function showPanel(id){
   if(id === 'medical') loadSavedReports();
   if(id === 'visits') loadVisits();
   if(id === 'dietitian') loadDietitianSection();
-  if(id === 'profile') loadTelegramLinkStatus();
+  if(id === 'profile'){ loadTelegramLinkStatus(); loadInviteCard(); }
   if(id === 'activity') refreshActivityLog();
   if(id === 'wearables') renderRealWearables();
 }
@@ -2592,6 +2649,194 @@ async function renderStreakBanner(){
       (s.best > s.current ? ` · best: ${s.best} days` : '');
   }
 }
+
+// ---------- Referrals / invite link ----------
+// Purely social for now -- no reward or credit is granted for an invite,
+// just a personal link and a running "N friends joined" count. The code
+// itself lives on profiles.referral_code; see add_referrals.sql.
+function generateReferralCodeClient(){
+  const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // no 0/O/1/I -- avoids visual confusion if read aloud or retyped
+  let code = '';
+  for(let i=0;i<7;i++) code += alphabet[Math.floor(Math.random()*alphabet.length)];
+  return code;
+}
+
+let cachedReferralCode = null;
+
+async function ensureReferralCode(){
+  if(!currentUser) return null;
+  if(cachedReferralCode) return cachedReferralCode;
+  const { data, error } = await db.from('profiles').select('referral_code').eq('user_id', currentUser.id).maybeSingle();
+  if(error){ console.error('Could not load referral code:', error.message); return null; }
+  if(data && data.referral_code){ cachedReferralCode = data.referral_code; return cachedReferralCode; }
+  // No code yet (a profile created before this feature existed, or a
+  // brand-new one) -- generate and save one. A collision against the DB's
+  // unique constraint is astronomically unlikely at this alphabet/length,
+  // but retry once just in case rather than leaving the person with no link.
+  for(let attempt=0; attempt<2; attempt++){
+    const code = generateReferralCodeClient();
+    const { error: saveErr } = await db.from('profiles').update({ referral_code: code }).eq('user_id', currentUser.id);
+    if(!saveErr){ cachedReferralCode = code; return code; }
+    if(!/duplicate|unique/i.test(saveErr.message || '')){ console.error('Could not save referral code:', saveErr.message); return null; }
+  }
+  return null;
+}
+
+function referralLinkFor(code){
+  return `${location.origin}${location.pathname}?ref=${code}`;
+}
+
+async function loadInviteCard(){
+  if(!currentUser) return;
+  const code = await ensureReferralCode();
+  const linkInput = document.getElementById('inviteLinkInput');
+  const countEl = document.getElementById('inviteFriendsCount');
+  if(!code){
+    if(countEl) countEl.textContent = "Couldn't set up your invite link just now -- try reopening this tab in a moment.";
+    return;
+  }
+  if(linkInput) linkInput.value = referralLinkFor(code);
+  const { count, error } = await db.from('referrals').select('id', { count: 'exact' }).eq('referrer_user_id', currentUser.id);
+  if(!countEl) return;
+  if(error){ countEl.textContent = 'Share this link with a friend to get started.'; return; }
+  countEl.textContent = (count && count > 0)
+    ? `${count} friend${count===1?'':'s'} joined through your invite so far 🎉`
+    : "Share this link with a friend -- when they join, you'll see them show up here.";
+}
+
+document.getElementById('copyInviteLinkBtn').onclick = async ()=>{
+  const input = document.getElementById('inviteLinkInput');
+  if(!input.value) return;
+  try{ await navigator.clipboard.writeText(input.value); showShareToast('Invite link copied!'); }
+  catch(e){
+    input.removeAttribute('readonly'); input.select(); document.execCommand('copy'); input.setAttribute('readonly', '');
+    showShareToast('Invite link copied!');
+  }
+};
+
+document.getElementById('shareInviteBtn').onclick = async ()=>{
+  const input = document.getElementById('inviteLinkInput');
+  if(!input.value) return;
+  const text = "I've been using NutriGap to track my nutrition gap day to day -- thought you might like it too.";
+  if(navigator.share){
+    try{ await navigator.share({ title: 'Try NutriGap', text, url: input.value }); return; }
+    catch(e){ if(e && e.name === 'AbortError') return; }
+  }
+  try{ await navigator.clipboard.writeText(`${text} ${input.value}`); showShareToast('Copied to clipboard -- paste it to share!'); }
+  catch(e){ showShareToast("Couldn't copy automatically -- here's the link: " + input.value, true); }
+};
+
+// ---------- Shareable weekly progress card ----------
+// A branded, canvas-rendered image (not a screenshot) so it looks the same
+// everywhere it's shared. Deliberately shows only gamified engagement
+// stats (streak, days logged, meals tracked) -- never weight, targets, or
+// anything from a medical report -- so there's nothing sensitive in an
+// image that, once shared, is out of the person's control. The invite link
+// is baked into the image itself, so every share doubles as an invite.
+async function computeWeeklyRecap(){
+  if(!currentUser) return null;
+  const streak = await computeStreak();
+  const days = [];
+  const cursor = new Date();
+  for(let i=0;i<7;i++){ days.push(toDateStr(cursor)); cursor.setDate(cursor.getDate()-1); }
+  const startStr = days[days.length-1], endStr = days[0];
+  const { data, error } = await db.from('diet_entries')
+    .select('entry_date')
+    .eq('user_id', currentUser.id)
+    .gte('entry_date', startStr)
+    .lte('entry_date', endStr);
+  if(error){ console.error('Could not load weekly recap data:', error.message); return null; }
+  const loggedDays = new Set((data || []).map(r=>r.entry_date));
+  return {
+    streak,
+    daysLoggedThisWeek: days.filter(d=>loggedDays.has(d)).length,
+    mealsThisWeek: (data || []).length,
+  };
+}
+
+async function buildProgressCardImage(){
+  const recap = await computeWeeklyRecap();
+  if(!recap) return null;
+  const code = await ensureReferralCode();
+  const name = (currentUser.user_metadata && currentUser.user_metadata.full_name) || (currentUser.email || '').split('@')[0] || 'My';
+  try{ await document.fonts.ready; } catch(e){ /* best-effort -- falls back to default fonts */ }
+
+  const W = 1080, H = 1080;
+  const canvas = document.createElement('canvas');
+  canvas.width = W; canvas.height = H;
+  const ctx = canvas.getContext('2d');
+
+  const grad = ctx.createLinearGradient(0, 0, W, H);
+  grad.addColorStop(0, '#1D4E40');
+  grad.addColorStop(1, '#2B6E5A');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.textAlign = 'left';
+  ctx.fillStyle = '#F1F4EC';
+  ctx.font = "600 44px 'Fraunces', Georgia, serif";
+  ctx.fillText('NutriGap', 72, 110);
+  ctx.font = "400 26px 'IBM Plex Sans', Arial, sans-serif";
+  ctx.fillStyle = 'rgba(241,244,236,0.8)';
+  ctx.fillText(`${name}'s week`, 72, 150);
+
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#F1F4EC';
+  ctx.font = "700 240px 'Fraunces', Georgia, serif";
+  ctx.fillText(String(recap.streak.current), W / 2, 540);
+  ctx.font = "500 40px 'IBM Plex Sans', Arial, sans-serif";
+  ctx.fillText(recap.streak.current === 1 ? 'day streak 🔥' : 'day streak 🔥', W / 2, 600);
+
+  ctx.font = "500 34px 'IBM Plex Sans', Arial, sans-serif";
+  ctx.fillStyle = 'rgba(241,244,236,0.92)';
+  ctx.fillText(`Logged ${recap.daysLoggedThisWeek}/7 days this week · ${recap.mealsThisWeek} meal${recap.mealsThisWeek===1?'':'s'} tracked`, W / 2, 740);
+
+  const link = code ? referralLinkFor(code) : `${location.origin}${location.pathname}`;
+  ctx.font = "400 26px 'IBM Plex Sans', Arial, sans-serif";
+  ctx.fillStyle = 'rgba(241,244,236,0.75)';
+  ctx.fillText('Track your own nutrition gap, free:', W / 2, 960);
+  ctx.font = "600 30px 'IBM Plex Sans', Arial, sans-serif";
+  ctx.fillStyle = '#F1F4EC';
+  ctx.fillText(link.replace(/^https?:\/\//, ''), W / 2, 1002);
+
+  ctx.textAlign = 'left';
+  return new Promise(resolve=>{
+    canvas.toBlob(blob=> resolve({ blob, link }), 'image/png');
+  });
+}
+
+async function shareProgressCard(){
+  const btn = document.getElementById('shareProgressBtn');
+  if(!currentUser || !btn) return;
+  const original = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = 'Building…';
+  try{
+    const result = await buildProgressCardImage();
+    if(!result || !result.blob){ showShareToast("Couldn't build your progress card -- try again in a moment.", true); return; }
+    const { blob } = result;
+    const file = new File([blob], 'nutrigap-progress.png', { type: 'image/png' });
+    if(navigator.canShare && navigator.canShare({ files: [file] })){
+      try{
+        await navigator.share({ files: [file], title: 'My NutriGap progress', text: 'My NutriGap week so far 👇' });
+        return;
+      } catch(e){ if(e && e.name === 'AbortError') return; /* else fall through to a direct download */ }
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = 'nutrigap-progress.png';
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=> URL.revokeObjectURL(url), 10000);
+    showShareToast('Image downloaded -- share it from your photos/downloads.');
+  } catch(e){
+    console.error('Share progress card failed:', e);
+    showShareToast("Couldn't share your progress card just now.", true);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = original;
+  }
+}
+document.getElementById('shareProgressBtn').onclick = shareProgressCard;
 
 // ---------- Voice / text capture ----------
 // Best-effort keyword matcher against each food's own keyword list — a
