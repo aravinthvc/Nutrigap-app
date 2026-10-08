@@ -637,6 +637,12 @@
   .range-bar-dot.unknown{ background:var(--ink-faint); }
   .range-bar-labels{ display:flex; justify-content:space-between; font-size:10.5px; color:var(--ink-faint); margin-top:4px; }
   .trend-chart-mini{ margin-top:14px; }
+  .trend-chart-mini-wrap{ margin-top:14px; }
+  .mini-chart-dot{
+    position:absolute; width:7px; height:7px; border-radius:50%;
+    transform:translate(-50%, -50%); border:1.5px solid #fff; box-sizing:border-box;
+    cursor:default;
+  }
   .trend-table-toggle{ font-size:12px; color:var(--teal-deep); cursor:pointer; margin-top:10px; display:inline-block; }
   .trend-detail-table{ display:none; margin-top:10px; width:100%; border-collapse:collapse; font-size:12.5px; }
   .trend-detail-table.open{ display:table; }
@@ -1063,6 +1069,7 @@
           <div class="card">
             <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Macronutrients</h3>
             <div id="macroGaps"></div>
+            <div class="note" id="partialDataNote" style="display:none; margin-top:10px;"></div>
           </div>
 
           <div class="insight-card" style="margin-top:20px;">
@@ -2455,7 +2462,27 @@ function mapFoodRow(row){
     vitA: row.vit_a, vitE: row.vit_e, vitK: row.vit_k,
     folate: row.folate, vitB6: row.vit_b6,
     magnesium: row.magnesium, zinc: row.zinc, potassium: row.potassium,
-    sodium: row.sodium, selenium: row.selenium
+    sodium: row.sodium, selenium: row.selenium,
+    isPartial: false
+  };
+}
+
+// meal_box_items only ever carries kcal/protein/carbs/fat -- never fiber or any of
+// the 15 micronutrients (see MEALBOX_COVERED_GAP_LABELS). A diet_entries row logged
+// from a meal box (meal_box_item_id set instead of food_id) is mapped through this
+// instead of mapFoodRow(), with every unknown nutrient explicitly 0 (so it adds
+// nothing to today's totals rather than fabricating a number) and isPartial:true so
+// the UI can say plainly that fiber/micronutrient coverage wasn't counted for it --
+// see the partial-data note in renderGaps() and the "BFB box" tag in renderLog().
+function mapMealBoxRow(row){
+  return {
+    id: row.id,
+    name: row.name,
+    kcal: row.kcal, protein: row.protein, carbs: row.carbs, fat: row.fat,
+    fiber: 0, iron: 0, calcium: 0, vitD: 0, vitB12: 0, vitC: 0,
+    vitA: 0, vitE: 0, vitK: 0, folate: 0, vitB6: 0,
+    magnesium: 0, zinc: 0, potassium: 0, sodium: 0, selenium: 0,
+    isPartial: true
   };
 }
 
@@ -2490,21 +2517,21 @@ async function refreshDietLog(){
   if(!currentUser){ entriesCache = []; renderLog(); renderGaps(); return; }
   const { data, error } = await db
     .from('diet_entries')
-    .select('id, servings, meal, entry_date, foods(*)')
+    .select('id, servings, meal, entry_date, food_id, meal_box_item_id, foods(*), meal_box_items(*)')
     .eq('user_id', currentUser.id)
     .eq('entry_date', state.currentDate);
   if(error){
     console.error('Could not load diet log:', error.message);
     entriesCache = [];
   } else {
-    // mapFoodRow(row.foods) returns its own "id" (the food's id in the
-    // foods table) — that has to be spread in FIRST so the diet_entries
-    // row's own "id" below overwrites it. Doing it the other way around
-    // silently replaces the diary entry's real id with the food's id,
-    // which made every delete/edit target the wrong row (and match
-    // nothing, since food ids and diet_entries ids are different rows).
+    // mapFoodRow(row.foods)/mapMealBoxRow(row.meal_box_items) each return their
+    // own "id" (the foods/meal_box_items row's id) — that has to be spread in
+    // FIRST so the diet_entries row's own "id" below overwrites it. Doing it
+    // the other way around silently replaces the diary entry's real id with
+    // the catalog item's id, which made every delete/edit target the wrong
+    // row (and match nothing, since those ids and diet_entries ids differ).
     entriesCache = data.map(row => ({
-      ...mapFoodRow(row.foods),
+      ...(row.meal_box_item_id ? mapMealBoxRow(row.meal_box_items) : mapFoodRow(row.foods)),
       id: row.id,
       servings: row.servings,
       meal: row.meal,
@@ -2967,7 +2994,10 @@ function renderLog(){
     mealEntries.forEach(entry=>{
       mealKcal += entry.kcal * entry.servings;
       const tr = document.createElement('tr');
-      tr.innerHTML = `<td>${entry.name}</td>
+      const partialTag = entry.isPartial
+        ? ` <span class="mealbox-tag" title="Logged from the BFB meal box — tracked for calories/protein/carbs/fat only; fiber and micronutrients aren't counted for this item">BFB box</span>`
+        : '';
+      tr.innerHTML = `<td>${entry.name}${partialTag}</td>
         <td><span class="meal-badge meal-${entry.meal}">${MEAL_LABELS[entry.meal]}</span></td>
         <td><input type="number" class="pqty edit-servings" value="${entry.servings}" min="0.25" step="0.25" data-id="${entry.id}" style="width:56px; padding:4px 6px; border:1px solid var(--line); border-radius:4px; font-family:inherit; font-size:13px;"></td>
         <td>${Math.round(entry.kcal*entry.servings)}</td>
@@ -3126,6 +3156,17 @@ function renderGaps(){
   const label = friendlyDate(state.currentDate);
   document.getElementById('gapsSubtitle').textContent = `What ${label === 'today' ? "today's" : label + "'s"} diet log covers against your daily target, macro and micro.`;
   document.getElementById('insightHeading').textContent = `What ${label === 'today' ? "today's" : label + "'s"} log suggests`;
+
+  const partialNoteEl = document.getElementById('partialDataNote');
+  const partialCount = currentEntries().filter(e=>e.isPartial).length;
+  if(partialCount > 0){
+    const dayWord = label === 'today' ? 'today' : label;
+    partialNoteEl.textContent = `${partialCount} meal-box item${partialCount===1?'':'s'} logged ${dayWord} (tagged "BFB box" below) — tracked for calories, protein, carbs and fat only. Fiber and micronutrient numbers aren't available for those items, so ${dayWord}'s fiber/micronutrient figures above may be a little better than what was actually eaten.`;
+    partialNoteEl.style.display = 'block';
+  } else {
+    partialNoteEl.style.display = 'none';
+  }
+
   renderInsight(t, tg);
 }
 
@@ -3341,7 +3382,39 @@ function mealBoxCard(d, remaining){
     <div class="tags">${tags}</div>
     <div class="macros">${macros}</div>
     ${mealBoxFillLine(d, remaining)}
+    <button class="btn ghost small log-mealbox-btn" data-mealbox-id="${d.id}" title="Logs calories/protein/carbs/fat only — this dish has no fiber or micronutrient data, so those won't be counted toward today's gap">Log this</button>
   </div>`;
+}
+
+// Logs a BFB meal-box dish as its own kind of diary entry (meal_box_item_id set,
+// food_id left null) rather than disguising it as a complete `foods` entry. The
+// day's totals/gap math (totals() above) will add its kcal/protein/carbs/fat like
+// any other entry but contribute nothing to fiber/micronutrients, since those are
+// genuinely unknown for this catalog -- see mapMealBoxRow() and the partial-data
+// note rendered in renderGaps(). Mirrors the exact insert shape the regular
+// add-food form and the food-fallback suggestions already use, just with
+// meal_box_item_id instead of food_id.
+function wireLogMealBoxButtons(container){
+  container.querySelectorAll('.log-mealbox-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      if(!currentUser) return;
+      btn.disabled = true;
+      btn.textContent = 'Logging…';
+      const meal = getSel('mealGroup');
+      const { error } = await db.from('diet_entries').insert({
+        user_id: currentUser.id, entry_date: state.currentDate,
+        meal_box_item_id: btn.dataset.mealboxId, servings: 1, meal
+      });
+      if(error){
+        console.error('Could not log meal-box item:', error.message);
+        btn.disabled = false;
+        btn.textContent = "Couldn't log — try again";
+        return;
+      }
+      btn.textContent = 'Logged ✓';
+      await refreshDietLog(); // re-renders the diet log, gaps (incl. the partial-data note), and this gap view
+    };
+  });
 }
 
 // ---- Mode: "Best for today's gap" ----
@@ -3452,6 +3525,7 @@ async function renderMealBoxesGap(){
   listEl.innerHTML = top.map(d => mealBoxCard(d, remaining)).join('');
   countEl.textContent = top.length === 0 ? '' : `Showing the ${top.length} best-fitting dish${top.length===1?'':'es'} for what's left of ${label === 'today' ? 'today' : label}`;
   emptyEl.style.display = top.length === 0 ? 'block' : 'none';
+  wireLogMealBoxButtons(listEl);
 
   // ---- Fallback to individual foods: whenever meal boxes have no match, or the
   // gap that matters most right now isn't one meal boxes can even see (fiber or
@@ -4321,6 +4395,19 @@ const NUTRIENT_FOOD_SUGGESTIONS = {
 };
 
 
+// A report's printed "value" sometimes already carries its unit as part of
+// the text (e.g. "70 /cmm"), while "unit" is also extracted separately for
+// charting. Displaying both naively duplicates it ("70 /cmm /cmm") — this
+// only appends the unit when it isn't already present in the value text.
+function formatValueUnit(rawValue, unit){
+  const raw = rawValue === undefined || rawValue === null ? '' : String(rawValue);
+  if(!unit) return raw;
+  const rawNorm = raw.toLowerCase().replace(/\s+/g, '');
+  const unitNorm = String(unit).toLowerCase().replace(/\s+/g, '');
+  if(!unitNorm || rawNorm.includes(unitNorm)) return raw;
+  return `${raw} ${unit}`;
+}
+
 function normalizeMarkerText(s){
   return (s || '').toLowerCase()
     .replace(/[()%,]/g, ' ')
@@ -4423,7 +4510,7 @@ function renderRangeBar(point, rangeBounds){
   return `<div class="range-bar-wrap">
     <div class="range-bar-track">
       <div class="range-bar-zone" style="left:0; right:0;"></div>
-      <div class="range-bar-dot ${dotCls}" style="left:${pct}%;" title="${point.rawValue}${point.unit ? ' '+point.unit : ''}"></div>
+      <div class="range-bar-dot ${dotCls}" style="left:${pct}%;" title="${formatValueUnit(point.rawValue, point.unit)}"></div>
     </div>
     <div class="range-bar-labels"><span>${lo !== null ? lo : ''}</span><span>${hi !== null ? hi : ''}</span></div>
   </div>`;
@@ -4441,14 +4528,25 @@ function renderMiniLineChart(points){
     return { x, y, flag: p.flag, raw: p.rawValue, unit: p.unit, dateLabel: p.dateLabel };
   });
   const pathD = coords.map((c,i)=> (i===0?'M':'L') + c.x.toFixed(1) + ',' + c.y.toFixed(1)).join(' ');
-  const dots = coords.map(c=>{
+  // Dots are rendered as plain HTML circles positioned by percentage, not as
+  // SVG <circle> elements. The chart SVG uses preserveAspectRatio="none" so a
+  // wide card can stretch the line to fill its width without changing the
+  // fixed pixel height -- that same non-uniform stretch distorts any circle
+  // drawn inside the SVG's own coordinate space into a flattened oval/pill
+  // shape (most visible with only 2 points, far apart, on a wide card).
+  // Positioning ordinary round divs on top of the SVG sidesteps that entirely.
+  const dotsHtml = coords.map(c=>{
     const color = (c.flag==='Low'||c.flag==='High') ? 'var(--rust)' : c.flag==='Normal' ? 'var(--teal)' : 'var(--ink-faint)';
-    return `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="3.5" fill="${color}" stroke="#fff" stroke-width="1"><title>${c.dateLabel}: ${c.raw}${c.unit?(' '+c.unit):''}</title></circle>`;
+    const leftPct = (c.x / w) * 100;
+    const topPct = (c.y / h) * 100;
+    return `<div class="mini-chart-dot" style="left:${leftPct.toFixed(2)}%; top:${topPct.toFixed(2)}%; background:${color};" title="${c.dateLabel}: ${formatValueUnit(c.raw, c.unit)}"></div>`;
   }).join('');
-  return `<svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="overflow:visible; display:block;">
-    <path d="${pathD}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5"/>
-    ${dots}
-  </svg>`;
+  return `<div class="trend-chart-mini-wrap" style="position:relative; width:100%; height:${h}px;">
+    <svg viewBox="0 0 ${w} ${h}" width="100%" height="${h}" preserveAspectRatio="none" style="position:absolute; inset:0; display:block;">
+      <path d="${pathD}" fill="none" stroke="var(--ink-faint)" stroke-width="1.5"/>
+    </svg>
+    ${dotsHtml}
+  </div>`;
 }
 
 function renderMedicalTrends(reports){
@@ -4499,7 +4597,7 @@ function renderTrendCards(entries, filterCategory){
           <div class="tcat">${entry.category} · <span class="explain-btn" data-key="${key}" data-name="${entry.label.replace(/"/g,'&quot;')}">What is this test?</span></div>
         </div>
         <div class="tlatest">
-          <div class="v">${latest.rawValue}${latest.unit ? ' '+latest.unit : ''}</div>
+          <div class="v">${formatValueUnit(latest.rawValue, latest.unit)}</div>
           ${delta !== null ? `<div class="delta">${delta > 0 ? '▲' : delta < 0 ? '▼' : '—'} ${Math.abs(delta).toFixed(2)} since previous</div>` : ''}
         </div>
       </div>
@@ -4513,7 +4611,7 @@ function renderTrendCards(entries, filterCategory){
       <div class="table-scroll">
       <table class="trend-detail-table">
         <thead><tr><th>Date</th><th>Value</th><th>Reference range</th><th>Status</th></tr></thead>
-        <tbody>${points.map(p=>`<tr><td>${p.dateLabel}</td><td>${p.rawValue}${p.unit?' '+p.unit:''}</td><td>${p.referenceRange || '—'}</td><td>${p.flag}</td></tr>`).join('')}</tbody>
+        <tbody>${points.map(p=>`<tr><td>${p.dateLabel}</td><td>${formatValueUnit(p.rawValue, p.unit)}</td><td>${p.referenceRange || '—'}</td><td>${p.flag}</td></tr>`).join('')}</tbody>
       </table>
       </div>
     </div>`;
