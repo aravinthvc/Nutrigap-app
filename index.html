@@ -693,6 +693,8 @@
   .vfile-chip:hover{ border-color:var(--ink-faint); }
   .vfile-chip .vfile-x{ color:var(--ink-faint); cursor:pointer; font-weight:600; }
   .vfile-chip .vfile-x:hover{ color:var(--rust); }
+  .vfile-chip .vfile-share{ color:var(--ink-faint); cursor:pointer; font-size:11px; }
+  .vfile-chip .vfile-share:hover{ color:var(--teal-deep); }
   .vupload-row{ display:flex; gap:8px; align-items:center; margin-top:12px; flex-wrap:wrap; }
   .vupload-row select{ padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-family:inherit; font-size:12.5px; }
   .follow-up-item{
@@ -4058,6 +4060,7 @@ function renderSavedReportsList(reports){
         <div class="sactions">
           <button class="btn ghost small toggle-btn">View</button>
           ${r.storage_path ? '<button class="btn ghost small original-btn">View original</button>' : ''}
+          ${r.storage_path ? '<button class="btn ghost small share-report-btn">Share</button>' : ''}
           <button class="btn ghost small download-btn">Download CSV</button>
           <button class="btn ghost small delete-btn">Delete</button>
         </div>
@@ -4108,6 +4111,14 @@ function renderSavedReportsList(reports){
       originalBtn.onclick = ()=>{
         const report = reports.find(r=>String(r.id)===String(id));
         if(report && report.storage_path) viewVisitFile(report.storage_path);
+      };
+    }
+
+    const shareReportBtn = card.querySelector('.share-report-btn');
+    if(shareReportBtn){
+      shareReportBtn.onclick = ()=>{
+        const report = reports.find(r=>String(r.id)===String(id));
+        if(report) shareStorageFile(report.storage_path, report.file_name || 'Medical report');
       };
     }
 
@@ -4813,6 +4824,63 @@ async function viewVisitFile(storagePath){
   window.open(data.signedUrl, '_blank');
 }
 
+// Small floating confirmation, created on first use rather than needing a
+// dedicated element in every panel that calls shareStorageFile() below.
+function showShareToast(msg, isError){
+  let el = document.getElementById('shareToast');
+  if(!el){
+    el = document.createElement('div');
+    el.id = 'shareToast';
+    el.style.cssText = 'position:fixed; bottom:24px; left:50%; transform:translateX(-50%); color:#fff; padding:10px 18px; border-radius:8px; font-size:13px; z-index:9999; box-shadow:0 4px 16px rgba(0,0,0,.2); max-width:90vw; text-align:center;';
+    document.body.appendChild(el);
+  }
+  el.textContent = msg;
+  el.style.background = isError ? 'var(--rust)' : 'var(--ink)';
+  el.style.display = 'block';
+  clearTimeout(el._hideTimer);
+  el._hideTimer = setTimeout(()=>{ el.style.display = 'none'; }, 4000);
+}
+
+// Shares a stored file (a saved medical report OR a doctor-visit file --
+// both live in the same private "medical-documents" bucket) via a
+// time-limited signed link. The recipient never needs a NutriGap account --
+// the link itself is the access control, which is exactly why it's
+// time-limited rather than permanent. 24 hours: long enough to actually
+// reach wherever it's going (a doctor's office, a family member) by
+// whatever the device's native share sheet offers -- WhatsApp, Telegram,
+// email -- before an appointment, including the "forgot to carry the
+// physical report" case this was built for; short enough that a link
+// someone forwards on doesn't stay open indefinitely. Prefers the native
+// share sheet (navigator.share) so sharing to another app is one tap;
+// falls back to copying the link to the clipboard where that's not
+// available (most desktop browsers).
+async function shareStorageFile(storagePath, label){
+  if(!storagePath){ showShareToast("No file attached to this one -- nothing to share.", true); return; }
+  const { data, error } = await db.storage.from('medical-documents').createSignedUrl(storagePath, 24 * 60 * 60);
+  if(error || !data || !data.signedUrl){
+    showShareToast("Couldn't create a share link just now -- try again in a moment.", true);
+    return;
+  }
+  const url = data.signedUrl;
+  const title = label || 'NutriGap document';
+
+  if(navigator.share){
+    try{
+      await navigator.share({ title, text: `${title} (link expires in 24 hours)`, url });
+      return;
+    } catch(e){
+      if(e && e.name === 'AbortError') return; // they backed out of the share sheet -- not an error
+      // anything else (e.g. share API present but this specific call unsupported) -- fall through to copy
+    }
+  }
+  try{
+    await navigator.clipboard.writeText(url);
+    showShareToast('Link copied -- valid for 24 hours. Paste it wherever you want to send it.');
+  } catch(e){
+    showShareToast("Couldn't copy automatically -- here's the link: " + url, true);
+  }
+}
+
 async function deleteVisitFile(fileId, storagePath){
   await db.storage.from('medical-documents').remove([storagePath]);
   await db.from('doctor_visit_files').delete().eq('id', fileId);
@@ -4967,6 +5035,7 @@ function renderVisitsList(visits, filesByVisit){
       <div class="vfiles">
         ${files.map(f=>`<span class="vfile-chip" data-file-id="${f.id}" data-path="${f.storage_path}">
           📄 ${DOC_TYPE_LABELS[f.doc_type] || 'File'}${f.file_name ? ': '+f.file_name : ''}
+          <span class="vfile-share" data-path="${f.storage_path}" data-label="${(DOC_TYPE_LABELS[f.doc_type] || 'File').replace(/"/g,'&quot;')}${f.file_name ? ' - '+f.file_name.replace(/"/g,'&quot;') : ''}" title="Share">🔗</span>
           <span class="vfile-x" data-file-id="${f.id}" data-path="${f.storage_path}">×</span>
         </span>`).join('')}
       </div>
@@ -4998,8 +5067,14 @@ function renderVisitsList(visits, filesByVisit){
 
     card.querySelectorAll('.vfile-chip').forEach(chip=>{
       chip.onclick = (e)=>{
-        if(e.target.classList.contains('vfile-x')) return; // handled separately
+        if(e.target.classList.contains('vfile-x') || e.target.classList.contains('vfile-share')) return; // handled separately
         viewVisitFile(chip.dataset.path);
+      };
+    });
+    card.querySelectorAll('.vfile-share').forEach(s=>{
+      s.onclick = (e)=>{
+        e.stopPropagation();
+        shareStorageFile(s.dataset.path, s.dataset.label);
       };
     });
     card.querySelectorAll('.vfile-x').forEach(x=>{
