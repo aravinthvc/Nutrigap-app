@@ -8,7 +8,29 @@ Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supaba
 
 **Deploy-status note:** the cold-photo fix, the dead-end-on-failed-parse fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter are all now **confirmed live** — Aravinth redeployed `api/telegram-webhook.js`, tested a cold photo of idlis/sambar/chutney live in the bot (it correctly started the flow, asked meal/date, identified the photo, and logged it on confirm), and confirmed "working." The `/log` command is also now registered in Telegram's own "/" menu (ran the `setMyCommands` curl command). Nothing from this session is pending redeploy anymore as of 2026-10-07.
 
-## Newest this session (2026-10-08): confirmed the medical trends dashboard is actually already fully built and live — and fixed two display bugs Aravinth spotted in a live screenshot
+## Newest this session (2026-10-08): built "My documents" on Telegram — fetch a saved medical report or prescription from the bot
+
+Aravinth asked whether someone can pull their medical report and doctor's prescription through Telegram. They couldn't — Telegram had zero document functionality (only a line mentioning the website's "medical report review" as a signup incentive). Built it as a read-only mirror of the website's Medical reports / Doctor visits tabs, scoped with Aravinth first: both a quick browsable list AND "latest" shortcuts, deliver the real file into the chat (not a link), and fall back to a text summary for a report with no original file attached.
+
+**No new tables, columns, or storage policies** — reuses `medical_reports`, `doctor_visits`, `doctor_visit_files`, and the existing `medical-documents` storage bucket exactly as the website already does. The Telegram bot's service-role key can read storage objects directly (bypasses RLS, same privilege level it already has for every table), so no signed-URL dance is needed — it just downloads the bytes straight from Storage and re-uploads them to Telegram as a real document attachment.
+
+**New, in `lib/supabase-rest.js`:** `storageDownload(bucket, path)` — direct service-role GET against Supabase Storage's REST endpoint (plus `encodeStoragePath()`, which encodes each path segment but preserves the `/` separators).
+
+**New, in `api/telegram-webhook.js`:**
+- `📄 My documents` added to the persistent menu keyboard and `/documents` command — lists the last 10 saved reports + prescriptions (bills/consultation notes excluded, matching the "reports and prescriptions" scope Aravinth asked for), newest-first by date, each as a tappable button.
+- `/latestreport` and `/latestprescription` — shortcuts straight to the single newest one of each, no list needed.
+- Tapping a button (`doc:report:<id>` / `doc:presc:<id>` callback data) or using a "latest" shortcut downloads the file from Storage and sends it as a real Telegram document (`sendTelegramFile()`, a multipart upload to Telegram's `sendDocument` — no link, no expiry, opens natively in the chat).
+- A report saved with no original file (extracted values only) falls back to a plain-text summary of the markers instead of a file, per Aravinth's choice. Reuses the exact same duplicate-unit fix as today's dashboard bug (`formatValueUnitTG()`, same logic as `index.html`'s new `formatValueUnit()`, just duplicated for the Node side since the two files don't share code).
+- Every query is filtered by the verified `user_id` from `telegram_links`, same pattern as every other Telegram feature — a document ID for someone else's report is treated as "not found," never leaked.
+- `doctor_visit_files` has no `created_at` of its own, so prescriptions are sorted by their parent visit's `visit_date` (fetched via the same embedded-resource join `index.html`'s `loadVisits()` already uses), merged with reports' `report_date`/`created_at` and sorted newest-first in JS.
+
+**Deliberately out of scope for this pass:** fetching a document via free-text/AI ("send me my latest prescription" typed as a sentence) — only the button/command path is wired up; the AI intent classifier doesn't route to this yet. Worth adding later if Aravinth wants it to feel as natural as meal logging.
+
+Verified with an isolated test harness (mocked Supabase + Telegram API, no real network) covering: the combined list sorts correctly across both kinds and respects the `bill_receipt`/`consultation_note` exclusion; `/latestreport` sends the real file when one exists; a no-file report falls back to text with the unit NOT duplicated (reused the exact "70 /cmm" case from today's dashboard bug); `/latestprescription` sends the real file; a file row whose storage bytes are missing fails with an honest message instead of crashing; **a document ID belonging to a different user is correctly refused, never leaked** (the one security-relevant case, checked explicitly); and the empty-state (no saved documents at all) message. 16/16 checks passed.
+
+**Not yet deployed** — two files changed (`api/telegram-webhook.js`, `lib/supabase-rest.js`), no SQL to run. Worth Aravinth testing live once deployed (real Telegram `sendDocument` call, not mocked) before calling it fully confirmed, same as every other Telegram feature this session.
+
+## Earlier this session (2026-10-08): confirmed the medical trends dashboard is actually already fully built and live — and fixed two display bugs Aravinth spotted in a live screenshot
 
 Aravinth picked "medical trends dashboard" off the pending list to work on next, but first — correctly — asked me to check whether it was actually still pending, since the project notes can go stale. **They had**: the dashboard (taxonomy of ~70 lab markers across 9 categories, category filter tabs, range-position bars, mini trend-line charts, "What is this test?" explanations, dietitian notes + recipe-idea suggestions) is **not** in-progress — it's fully built, deployed, and working. Confirmed two ways: by reading the actual deployed `index.html` code (`MARKER_TAXONOMY`, `renderMedicalTrends()`, `renderTrendCards()`, etc. are all complete, not stubs), and by a live screenshot Aravinth shared from `nutrigap-app.vercel.app`, which showed the real "How your markers are trending" section working with real data (A/G Ratio, Absolute Basophils, category tabs). The "Pending" list entry for this was simply stale and has been removed below.
 
@@ -185,6 +207,7 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 8. **Run `add_world_cuisine_foods.sql` in the Supabase SQL editor** — adds the 100 new world-cuisine dishes; standalone, no code redeploy needed, safe any time.
 9. **Run `add_vegetables_fruits_protein.sql` in the Supabase SQL editor** — adds the 101 new vegetable/fruit/animal-protein items; standalone, no code redeploy needed, safe any time, independent of item 8.
 10. **Redeploy `index.html`** — fixes the duplicate-unit display bug and the stretched-oval trend-chart-dot bug on the medical trends dashboard; no SQL, no other file changes, safe any time.
-11. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
-12. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-13. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+11. **Redeploy `api/telegram-webhook.js` and `lib/supabase-rest.js` together** — adds "My documents" on Telegram (fetch a saved medical report or prescription via `/documents`, `/latestreport`, `/latestprescription`, or the new menu button); no SQL to run. Test live once deployed (a real file send to a real chat) before calling it confirmed.
+12. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
+13. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+14. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
