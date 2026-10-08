@@ -91,7 +91,7 @@ Available foods — choose the suggestion name ONLY from this exact list: ${JSON
       },
       body: JSON.stringify({
         model: 'claude-sonnet-5',
-        max_tokens: 1200,
+        max_tokens: 3000,
         system: systemPrompt,
         messages: [
           { role: 'user', content: userPrompt },
@@ -133,10 +133,19 @@ Available foods — choose the suggestion name ONLY from this exact list: ${JSON
     try {
       parsed = JSON.parse(cleaned);
     } catch (e) {
+      // A truncated response (hit max_tokens before any text block came
+      // out — e.g. spent its budget on internal reasoning first) leaves
+      // `cleaned` empty, which JSON.parse always rejects. Surface that
+      // distinctly instead of the generic parse-failure message, so this
+      // is diagnosable from the UI/console without needing Vercel logs.
+      const error = rawText
+        ? 'Could not parse the AI response as JSON.'
+        : `The AI response had no readable text (stop_reason: ${data.stop_reason || 'unknown'}) — it may have been cut off before producing an answer.`;
       res.status(502).json({
-        error: 'Could not parse the AI response as JSON.',
+        error,
         rawPreview: cleaned.slice(0, 300),
         blockTypes: (data.content || []).map(b => b.type),
+        stopReason: data.stop_reason,
       });
       return;
     }
