@@ -504,6 +504,13 @@ async function handleCallbackQuery(cq) {
     return;
   }
 
+  if (data.startsWith('docsmore:')) {
+    const offset = parseInt(data.split(':')[1], 10) || 0;
+    const { text: listText, keyboard } = await documentsListReply(link.user_id, offset);
+    await sendMessage(chatId, listText, keyboard);
+    return;
+  }
+
   if (!link.onboarding_state || !link.onboarding_state.step) {
     await sendMessage(chatId, "That button doesn't apply anymore -- send /help to see what I can do.");
     return;
@@ -1526,28 +1533,49 @@ async function sendVisitFile(chatId, file) {
 
 // Combined, newest-first browsable list -- reports and prescriptions mixed
 // together, each as its own tappable button (handled in
-// handleDocumentButton below via its callback_data).
-async function documentsListReply(userId) {
+// handleDocumentButton below via its callback_data). Paged 10 at a time
+// (DOCS_PAGE_SIZE) with a trailing "Show more" button rather than a single
+// fixed top-10 -- someone with a longer history can still reach an older
+// report or prescription instead of hitting a dead end after the newest 10.
+// Re-fetches and re-sorts the whole list on every page (no separate stored
+// "where was I" state) -- cheap at personal-data volumes, and means the
+// list is never stale if something was added/deleted between pages.
+const DOCS_PAGE_SIZE = 10;
+const DOCS_FETCH_CAP = 200; // generous ceiling for a personal medical history
+
+async function loadAllDocItems(userId) {
   const [reports, prescriptions] = await Promise.all([
-    loadRecentReports(userId, 10),
-    loadRecentPrescriptions(userId, 10),
+    loadRecentReports(userId, DOCS_FETCH_CAP),
+    loadRecentPrescriptions(userId, DOCS_FETCH_CAP),
   ]);
-  if (reports.length === 0 && prescriptions.length === 0) {
-    return {
-      text: "You don't have any saved medical reports or prescriptions yet -- those are saved from the website's Medical reports and Doctor visits tabs.",
-      keyboard: null,
-    };
-  }
   const items = [
     ...reports.map(r => ({ sortKey: r.report_date || r.created_at, button: { text: reportLabel(r), callback_data: `doc:report:${r.id}` } })),
     ...prescriptions.map(p => ({ sortKey: (p.doctor_visits && p.doctor_visits.visit_date) || '', button: { text: prescriptionLabel(p), callback_data: `doc:presc:${p.id}` } })),
   ];
   items.sort((a, b) => String(b.sortKey).localeCompare(String(a.sortKey)));
-  const top = items.slice(0, 10);
-  return {
-    text: `Your last ${top.length} saved document${top.length === 1 ? '' : 's'} (reports and prescriptions) -- tap one to get it sent here:`,
-    keyboard: top.map(it => [it.button]),
-  };
+  return items;
+}
+
+async function documentsListReply(userId, offset) {
+  offset = Number.isFinite(offset) && offset > 0 ? offset : 0;
+  const items = await loadAllDocItems(userId);
+  if (items.length === 0) {
+    return {
+      text: "You don't have any saved medical reports or prescriptions yet -- those are saved from the website's Medical reports and Doctor visits tabs.",
+      keyboard: null,
+    };
+  }
+  const page = items.slice(offset, offset + DOCS_PAGE_SIZE);
+  const keyboard = page.map(it => [it.button]);
+  const shownSoFar = offset + page.length;
+  const remaining = items.length - shownSoFar;
+  if (remaining > 0) {
+    keyboard.push([{ text: `➡️ Show ${Math.min(remaining, DOCS_PAGE_SIZE)} more`, callback_data: `docsmore:${shownSoFar}` }]);
+  }
+  const rangeLabel = items.length <= DOCS_PAGE_SIZE
+    ? `Your ${items.length} saved document${items.length === 1 ? '' : 's'} (reports and prescriptions)`
+    : `Documents ${offset + 1}–${shownSoFar} of ${items.length} (reports and prescriptions)`;
+  return { text: `${rangeLabel} -- tap one to get it sent here:`, keyboard };
 }
 
 async function handleDocumentButton(chatId, userId, data) {
