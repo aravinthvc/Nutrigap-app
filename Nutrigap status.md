@@ -2,13 +2,28 @@
 description: NutriGap / NutriGap_Bot build status — what's shipped, what's pending, what the user needs to do next. Read before resuming work on this project.
 ---
 
-# NutriGap status (as of 2026-10-07)
+# NutriGap status (as of 2026-10-08)
 
 Stack: Vercel serverless functions (`api/*.js`, CommonJS, no framework) + Supabase (Postgres + RLS). No local dev tooling — Aravinth deploys by copy-pasting files into Vercel/GitHub and SQL into the Supabase SQL editor. Telegram bot (`NutriGap_Bot`, webhook at `api/telegram-webhook.js`) is a second channel onto the same account/data as the website (`index.html`).
 
 **Deploy-status note:** the cold-photo fix, the dead-end-on-failed-parse fix, real photo-based meal analysis, the nutrient-specific-ideas fix, and the corrupted-dish filter are all now **confirmed live** — Aravinth redeployed `api/telegram-webhook.js`, tested a cold photo of idlis/sambar/chutney live in the bot (it correctly started the flow, asked meal/date, identified the photo, and logged it on confirm), and confirmed "working." The `/log` command is also now registered in Telegram's own "/" menu (ran the `setMyCommands` curl command). Nothing from this session is pending redeploy anymore as of 2026-10-07.
 
-## Newest this session: added 101 everyday vegetables, fruits, and animal-protein/fish items to the food catalog
+## Newest this session (2026-10-08): confirmed the medical trends dashboard is actually already fully built and live — and fixed two display bugs Aravinth spotted in a live screenshot
+
+Aravinth picked "medical trends dashboard" off the pending list to work on next, but first — correctly — asked me to check whether it was actually still pending, since the project notes can go stale. **They had**: the dashboard (taxonomy of ~70 lab markers across 9 categories, category filter tabs, range-position bars, mini trend-line charts, "What is this test?" explanations, dietitian notes + recipe-idea suggestions) is **not** in-progress — it's fully built, deployed, and working. Confirmed two ways: by reading the actual deployed `index.html` code (`MARKER_TAXONOMY`, `renderMedicalTrends()`, `renderTrendCards()`, etc. are all complete, not stubs), and by a live screenshot Aravinth shared from `nutrigap-app.vercel.app`, which showed the real "How your markers are trending" section working with real data (A/G Ratio, Absolute Basophils, category tabs). The "Pending" list entry for this was simply stale and has been removed below.
+
+**Two real display bugs found directly in that screenshot and fixed in `index.html`:**
+
+1. **Duplicate unit** — "Absolute Basophils" showed `70 /cmm /cmm`. Cause: `read-report.js` deliberately extracts a marker's `value` exactly as printed (which can already include its unit, e.g. "70 /cmm") *and* a separate `unit` field for charting — by design, not a bug in extraction. The display code then naively appended `unit` a second time whenever present. **Fix:** new `formatValueUnit(rawValue, unit)` helper that only appends the unit if it isn't already present in the value text (case/whitespace-insensitive substring check); applied everywhere a marker's value+unit are shown (trend-card header, range-bar tooltip, mini-chart tooltip, readings table).
+2. **Trend-chart dots rendered as stretched ovals/pills, not circles** — most visible with exactly 2 saved readings on a wide card (looked like a slider instead of a line chart). Cause: `renderMiniLineChart()` drew data points as SVG `<circle>` elements inside an `<svg preserveAspectRatio="none">` — that attribute lets the chart's line stretch to fill a wide card without changing its fixed small height, but it stretches *everything* non-uniformly, including circles, which is what flattened them into pills. **Fix:** dots are now plain round `<div class="mini-chart-dot">` elements positioned by percentage on top of the SVG (CSS `border-radius:50%`, fixed 7px size) instead of SVG circles — they're no longer subject to the SVG's non-uniform scaling, so they stay round at any card width. The connecting line itself is unaffected (still SVG, still intentionally stretched to fill the card).
+
+Verified with isolated logic tests (not just read) — `formatValueUnit()` checked against both the exact duplicate case from the screenshot and a few non-duplicate cases; `renderMiniLineChart()` checked to confirm its output no longer contains any `<circle>` element and produces correctly-positioned `.mini-chart-dot` divs instead — and with a real headless-Chromium screenshot of the new markup at a realistic wide card width, confirming the dots render as small circles, not ovals.
+
+**Separately flagged, not changed:** A/G Ratio displaying a unit of "%" looks medically wrong (that ratio is normally unitless) — most likely an artifact of how `read-report.js` extracted the unit from that specific report, not a trends-dashboard bug. Worth a look if Aravinth notices it on other ratio-type markers.
+
+**Not yet redeployed** — only `index.html` changed, no SQL and no other files; safe to re-paste into Vercel/GitHub whenever convenient.
+
+## Earlier this session: added 101 everyday vegetables, fruits, and animal-protein/fish items to the food catalog
 
 Aravinth asked to add "all vegetable, fruits and animal protein (including fish type)" to the catalog, calculated to standard consumption. Scoped it with him first: a broad everyday set (not an exhaustive botanical list), and animal protein/fish served **both** ways — plain cooked and Indian home-style curry — rather than picking one.
 
@@ -156,7 +171,7 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 - **Hand-fix the implausible-macro rows in `meal_box_items`** at the source — run `find_implausible_meal_box_macros.sql` in Supabase, correct each flagged row. The app now hides these from suggestions either way, but a hidden dish is one that currently can't be recommended to anyone.
 - **Keyword/synonym expansion pass** — still blocked on Aravinth exporting `select name, keywords from public.foods order by name;` and sending the result.
 - `foods` grows only through genuinely verified entries from now on — likely sourced from the `food_requests` backlog, not BFB's menu spreadsheet.
-- Medical trends dashboard; appointment reminders/confirmations (deferred, admin-side); Hindi/regional-language support; expanding wearable support beyond Fitbit/Strava (Google Fit/Health Connect, Garmin, Apple HealthKit are currently simulated placeholders, not real OAuth).
+- Medical trends dashboard is **done** (confirmed live 2026-10-08, two display bugs fixed — see above, pending redeploy). Still open: appointment reminders/confirmations (deferred, admin-side); Hindi/regional-language support; expanding wearable support beyond Fitbit/Strava (Google Fit/Health Connect, Garmin, Apple HealthKit are currently simulated placeholders, not real OAuth); the A/G Ratio "%" unit question flagged above, if it turns out to be a wider pattern.
 
 ## Deploy checklist
 
@@ -169,6 +184,7 @@ If the app recommends a BFB dish to close a gap, the customer reasonably expects
 7. ~~Redeploy `api/telegram-webhook.js` and `lib/nutrition-core.js` together to Vercel~~ — **done, confirmed live** (cold-photo fix, dead-end bug fix, real photo-based meal analysis, nutrient-specific-ideas fix, and corrupted-dish filter all tested working in production).
 8. **Run `add_world_cuisine_foods.sql` in the Supabase SQL editor** — adds the 100 new world-cuisine dishes; standalone, no code redeploy needed, safe any time.
 9. **Run `add_vegetables_fruits_protein.sql` in the Supabase SQL editor** — adds the 101 new vegetable/fruit/animal-protein items; standalone, no code redeploy needed, safe any time, independent of item 8.
-10. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
-11. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
-12. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
+10. **Redeploy `index.html`** — fixes the duplicate-unit display bug and the stretched-oval trend-chart-dot bug on the medical trends dashboard; no SQL, no other file changes, safe any time.
+11. Optional, whenever convenient: run `find_implausible_meal_box_macros.sql` in the Supabase SQL editor and hand-correct any rows it flags.
+12. Decide on and run the cleanup for the 47 pre-existing incomplete `foods` rows — separate from everything else above, still open.
+13. `revert_micronutrients_complete_column.sql` is optional cleanup, not required. `api/dietitian-chat.js` / `lib/dietitian-agent.js` are unchanged this phase.
