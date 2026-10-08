@@ -3012,10 +3012,10 @@ document.getElementById('photoInput').onchange = async ()=>{
 
   try{
     const imageBase64 = await resizeImageToBase64(file, 1024);
-    const res = await fetch('/api/photo-log', {
+    const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ imageBase64, mediaType: 'image/jpeg' }),
+      body: JSON.stringify({ kind: 'photo-log', imageBase64, mediaType: 'image/jpeg' }),
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Request failed');
@@ -4914,10 +4914,10 @@ async function showMarkerExplanation(key, label, panelEl, btnEl){
   } catch(e){ /* fall through to live lookup */ }
 
   try{
-    const res = await fetch('/api/explain-marker', {
+    const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ markerName: label })
+      body: JSON.stringify({ kind: 'explain-marker', markerName: label })
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Request failed');
@@ -5024,10 +5024,10 @@ async function fetchRecipeIdeas(foods, panelEl, btnEl){
   panelEl.innerHTML = '<div class="single-note">Coming up with some ideas…</div>';
   btnEl.disabled = true;
   try{
-    const res = await fetch('/api/recipe-ideas', {
+    const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ foods })
+      body: JSON.stringify({ kind: 'recipe-ideas', foods })
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Request failed');
@@ -5885,10 +5885,10 @@ async function autoSyncWearablesIfStale(){
 
   for(const w of staleProviders){
     try{
-      await fetch('/api/wearable-sync', {
+      await fetch('/api/wearable-actions', {
         method: 'POST',
         headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
-        body: JSON.stringify({ provider: w.provider }),
+        body: JSON.stringify({ action: 'sync', provider: w.provider }),
       });
     } catch(e){
       console.error('Background wearable sync failed for ' + w.provider + ':', e.message);
@@ -5942,10 +5942,10 @@ async function renderRealWearables(){
       if(!token) return;
       btn.disabled = true; btn.textContent = 'Syncing…';
       try{
-        const res = await fetch('/api/wearable-sync', {
+        const res = await fetch('/api/wearable-actions', {
           method: 'POST',
           headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
-          body: JSON.stringify({ provider }),
+          body: JSON.stringify({ action: 'sync', provider }),
         });
         const data = await res.json();
         if(!res.ok) throw new Error(data.error || 'Sync failed');
@@ -5963,10 +5963,10 @@ async function renderRealWearables(){
       const token = await getUserAccessToken();
       if(!token) return;
       showInlineConfirm(btn, `Disconnect ${provider}? You can reconnect any time.`, async ()=>{
-        await fetch('/api/wearable-disconnect', {
+        await fetch('/api/wearable-actions', {
           method: 'POST',
           headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
-          body: JSON.stringify({ provider }),
+          body: JSON.stringify({ action: 'disconnect', provider }),
         });
         await renderRealWearables();
       });
