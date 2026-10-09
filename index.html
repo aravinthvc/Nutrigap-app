@@ -399,6 +399,42 @@
     .mealbox-toolbar{ flex-direction:column; align-items:stretch; }
   }
 
+  /* Community recipes */
+  .recipe-grid{ display:grid; grid-template-columns:repeat(3, 1fr); gap:14px; }
+  @media (max-width: 900px){ .recipe-grid{ grid-template-columns:repeat(2,1fr); } }
+  @media (max-width: 560px){ .recipe-grid{ grid-template-columns:1fr; } }
+  .recipe-card{
+    border:1px solid var(--line); border-radius:var(--radius-s);
+    padding:14px; transition:border-color .15s ease; display:flex; flex-direction:column;
+  }
+  .recipe-card:hover{ border-color:var(--ink-faint); }
+  .recipe-card .t{ font-weight:500; font-size:14px; margin-bottom:6px; line-height:1.35; }
+  .recipe-card .by{ font-size:12px; color:var(--ink-faint); margin-bottom:10px; }
+  .recipe-embed{ position:relative; width:100%; padding-top:56.25%; margin-bottom:10px; border-radius:8px; overflow:hidden; background:var(--line-soft); }
+  .recipe-embed iframe{ position:absolute; inset:0; width:100%; height:100%; border:0; }
+  .recipe-link-card{
+    display:flex; align-items:center; gap:8px; padding:10px 12px; margin-bottom:10px;
+    border:1px solid var(--line); border-radius:8px; background:var(--line-soft);
+    font-size:12.5px; color:var(--ink-soft); text-decoration:none; word-break:break-all;
+  }
+  .recipe-link-card:hover{ border-color:var(--ink-faint); }
+  .recipe-card .desc{ font-size:12.5px; color:var(--ink-soft); margin-bottom:8px; line-height:1.4; }
+  .recipe-card .tags{ display:flex; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+  .recipe-card .servings{ font-size:12px; color:var(--ink-faint); margin-bottom:8px; }
+  .recipe-card details{ font-size:12.5px; color:var(--ink-soft); margin-bottom:10px; }
+  .recipe-card details summary{ cursor:pointer; color:var(--teal-deep); font-weight:500; }
+  .recipe-card details ul{ margin:8px 0 0; padding-left:18px; }
+  .recipe-card .actions{ margin-top:auto; display:flex; gap:8px; }
+  .tag-chip{
+    font-size:11px; padding:3px 8px; border-radius:20px;
+    background:var(--line-soft); color:var(--ink-soft); border:1px solid transparent; cursor:default;
+  }
+  button.tag-chip{ cursor:pointer; }
+  button.tag-chip.sel{ background:var(--teal-deep); color:#fff; }
+  .ingredient-row{ display:grid; grid-template-columns:2fr 1fr 1fr auto; gap:8px; margin-bottom:8px; align-items:center; }
+  .ingredient-row input{ padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-s); font-family:inherit; font-size:13.5px; }
+  @media (max-width: 560px){ .ingredient-row{ grid-template-columns:1fr 1fr; } }
+
   .meal-sugg{ display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:14px; }
   .meal-sugg .item{
     border:1px solid var(--line); border-radius:var(--radius-s);
@@ -1575,6 +1611,73 @@
       </div>
     </section>
 
+    <!-- COMMUNITY RECIPES -->
+    <section class="panel" data-panel="recipes">
+      <div class="page-head">
+        <h1>Community recipes</h1>
+        <p>Healthy recipes shared by other NutriGap members — post your own video or photo from wherever you already host it, list your ingredients, and browse what others have shared.</p>
+      </div>
+
+      <div class="disclaimer">
+        <strong>No nutrition numbers here yet</strong>
+        These are community posts, not verified catalog entries — there's no "Log this" button, and no kcal/macro figures are shown, because none have been honestly calculated yet. Ingredients are captured now so a real nutrition calculation can be added later without anyone re-entering their recipe.
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:10px;">
+          <h3 style="margin:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Share a recipe</h3>
+          <button class="btn ghost small" id="toggleRecipeFormBtn">Post a recipe</button>
+        </div>
+
+        <div id="recipeForm" style="display:none; margin-top:16px;">
+          <div class="field">
+            <label for="recipeTitle">Title</label>
+            <input type="text" id="recipeTitle" placeholder="e.g. High-protein breakfast oats">
+          </div>
+          <div class="field">
+            <label for="recipeDesc">Short description — optional</label>
+            <input type="text" id="recipeDesc" placeholder="A one-line description of the dish">
+          </div>
+          <div class="field">
+            <label for="recipeUrl">Link to your video or photo (YouTube, Instagram, or any link)</label>
+            <input type="url" id="recipeUrl" placeholder="https://youtube.com/watch?v=… or https://instagram.com/reel/…">
+          </div>
+          <div class="field">
+            <label for="recipeServings">Servings this recipe makes</label>
+            <input type="number" id="recipeServings" min="1" step="1" value="1" style="max-width:120px;">
+          </div>
+
+          <div class="field">
+            <label>Ingredients</label>
+            <div id="recipeIngredientRows"></div>
+            <button type="button" class="btn ghost small" id="addIngredientRowBtn">+ Add ingredient</button>
+          </div>
+
+          <div class="field">
+            <label>Tags — pick what fits, for browsing and filtering</label>
+            <div class="tags" id="recipeTagPicker"></div>
+          </div>
+
+          <div style="text-align:right;">
+            <button class="btn" id="postRecipeBtn">Post recipe</button>
+          </div>
+          <div id="postRecipeStatus" style="font-size:12px; color:var(--ink-faint); text-align:right; margin-top:6px;"></div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top:20px;">
+        <div class="mealbox-toolbar">
+          <input type="search" id="recipeSearch" placeholder="Search recipes (e.g. oats, paneer, salad)…">
+        </div>
+        <div class="tags" id="recipeTagFilter" style="margin-top:10px;"></div>
+
+        <div class="mealbox-count" id="recipeCount"></div>
+        <div class="empty" id="recipeEmpty" style="display:none;">No recipes match yet — be the first to post one, or try a broader search.</div>
+        <div class="recipe-grid" id="recipeList"></div>
+        <button class="btn ghost small" id="recipeLoadMoreBtn" style="display:none;">Show more</button>
+      </div>
+    </section>
+
   </main>
 </div>
 
@@ -1776,6 +1879,7 @@ const sections = [
   {id:'visits', label:'Doctor visits'},
   {id:'dietitian', label:'Dietitian'},
   {id:'wearables', label:'Wearables'},
+  {id:'recipes', label:'Community recipes'},
 ];
 const nav = document.getElementById('nav');
 sections.forEach((s,i)=>{
@@ -1798,6 +1902,7 @@ function showPanel(id){
   if(id === 'profile'){ loadTelegramLinkStatus(); loadInviteCard(); }
   if(id === 'activity') refreshActivityLog();
   if(id === 'wearables') renderRealWearables();
+  if(id === 'recipes') renderCommunityRecipes(true);
 }
 showPanel('profile');
 
@@ -3941,6 +4046,285 @@ async function renderMealBoxes(reset){
   emptyEl.style.display = total === 0 ? 'block' : 'none';
 
   const hasMore = mealBoxOffset < total;
+  moreBtn.style.display = hasMore ? 'inline-flex' : 'none';
+  moreBtn.disabled = false;
+  moreBtn.textContent = prevLabel === 'Loading…' ? 'Show more' : prevLabel;
+}
+
+// ---------- Community recipes ----------
+//
+// Self-serve recipe sharing, modeled on YouTube/Instagram's own posting
+// model: a creator links to video/content they already host elsewhere (so
+// this app never stores or pays for video/image hosting) and types their
+// own ingredient list. Goes live immediately -- no moderation queue, no
+// nutrition computed yet (see add_community_recipes.sql's header for why),
+// and deliberately no "Log this" button, unlike meal_box_items -- a one-tap
+// log action would misleadingly imply this counts toward a tracked gap the
+// way a verified food or BFB dish does.
+//
+// All reads/writes go straight through the browser's own Supabase session
+// (db.from(...)), same as diet_entries/weight_logs/visits elsewhere in this
+// app -- enforced entirely by the RLS policies in add_community_recipes.sql,
+// not by anything client-side. No new serverless function needed.
+
+// A curated set, not freeform text input, so "smart grouping" stays
+// consistent and filterable rather than a chaotic tag soup -- matches how
+// Aravinth asked for tags to work.
+const RECIPE_TAG_OPTIONS = [
+  'Breakfast', 'Lunch', 'Dinner', 'Snack', 'Dessert',
+  'Vegetarian', 'Vegan', 'Non-Veg', 'Egg',
+  'High-Protein', 'Low-Carb', 'Gluten-Free', 'Weight-Loss Friendly',
+  'Quick (Under 30 min)', 'South Indian', 'North Indian', 'Global',
+];
+
+function detectRecipePlatform(url){
+  try{
+    const host = new URL(url).hostname.replace(/^www\./, '');
+    if(host === 'youtube.com' || host === 'youtu.be' || host === 'm.youtube.com') return 'youtube';
+    if(host === 'instagram.com' || host === 'm.instagram.com') return 'instagram';
+    return 'other';
+  } catch(e){ return 'other'; }
+}
+
+// Handles the common YouTube URL shapes: youtu.be/<id>, youtube.com/watch?v=<id>,
+// youtube.com/shorts/<id>, youtube.com/embed/<id>. Returns null if it can't
+// confidently extract an 11-character video ID, so the caller can fall back
+// to a plain link rather than embedding a broken player.
+function extractYouTubeId(url){
+  try{
+    const u = new URL(url);
+    const host = u.hostname.replace(/^www\./, '');
+    let id = null;
+    if(host === 'youtu.be') id = u.pathname.slice(1).split('/')[0];
+    else if(host === 'youtube.com' || host === 'm.youtube.com'){
+      if(u.pathname === '/watch') id = u.searchParams.get('v');
+      else if(u.pathname.startsWith('/shorts/')) id = u.pathname.split('/')[2];
+      else if(u.pathname.startsWith('/embed/')) id = u.pathname.split('/')[2];
+    }
+    return (id && /^[A-Za-z0-9_-]{11}$/.test(id)) ? id : null;
+  } catch(e){ return null; }
+}
+
+// ---- Post-recipe form ----
+document.getElementById('toggleRecipeFormBtn').onclick = ()=>{
+  const form = document.getElementById('recipeForm');
+  const showing = form.style.display !== 'none';
+  form.style.display = showing ? 'none' : 'block';
+  document.getElementById('toggleRecipeFormBtn').textContent = showing ? 'Post a recipe' : 'Cancel';
+};
+
+function addIngredientRow(prefill){
+  const row = document.createElement('div');
+  row.className = 'ingredient-row';
+  row.innerHTML = `
+    <input type="text" class="ing-name" placeholder="Ingredient (e.g. Rolled oats)" value="${prefill ? escapeHtml(prefill.name||'') : ''}">
+    <input type="text" class="ing-qty" placeholder="Qty (e.g. 1)" value="${prefill ? escapeHtml(prefill.quantity||'') : ''}">
+    <input type="text" class="ing-unit" placeholder="Unit (e.g. cup)" value="${prefill ? escapeHtml(prefill.unit||'') : ''}">
+    <button type="button" class="btn ghost small remove-ing-row" title="Remove">✕</button>`;
+  row.querySelector('.remove-ing-row').onclick = ()=> row.remove();
+  document.getElementById('recipeIngredientRows').appendChild(row);
+}
+document.getElementById('addIngredientRowBtn').onclick = ()=> addIngredientRow();
+addIngredientRow(); addIngredientRow(); // start with two blank rows -- most recipes need at least that many
+
+// Tag picker in the post form -- toggle buttons, multi-select.
+const recipeTagPickerEl = document.getElementById('recipeTagPicker');
+RECIPE_TAG_OPTIONS.forEach(tag=>{
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'tag-chip';
+  b.textContent = tag;
+  b.dataset.tag = tag;
+  b.onclick = ()=> b.classList.toggle('sel');
+  recipeTagPickerEl.appendChild(b);
+});
+
+function collectIngredientRows(){
+  return Array.from(document.querySelectorAll('#recipeIngredientRows .ingredient-row')).map(row=>({
+    name: row.querySelector('.ing-name').value.trim(),
+    quantity: row.querySelector('.ing-qty').value.trim(),
+    unit: row.querySelector('.ing-unit').value.trim(),
+  })).filter(i=> i.name); // drop fully-blank rows
+}
+
+document.getElementById('postRecipeBtn').onclick = async ()=>{
+  if(!currentUser) return;
+  const statusEl = document.getElementById('postRecipeStatus');
+  const title = document.getElementById('recipeTitle').value.trim();
+  const description = document.getElementById('recipeDesc').value.trim();
+  const url = document.getElementById('recipeUrl').value.trim();
+  const servings = Math.max(1, parseInt(document.getElementById('recipeServings').value, 10) || 1);
+  const ingredients = collectIngredientRows();
+  const selectedTags = Array.from(recipeTagPickerEl.querySelectorAll('button.sel')).map(b=>b.dataset.tag);
+
+  if(!title){ statusEl.textContent = 'Please add a title.'; return; }
+  if(!url){ statusEl.textContent = 'Please add a link to your video or photo.'; return; }
+  let platform;
+  try{ new URL(url); platform = detectRecipePlatform(url); }
+  catch(e){ statusEl.textContent = 'That link doesn\'t look valid -- please check it and try again.'; return; }
+  if(ingredients.length === 0){ statusEl.textContent = 'Please list at least one ingredient.'; return; }
+
+  const btn = document.getElementById('postRecipeBtn');
+  btn.disabled = true; statusEl.textContent = 'Posting…';
+
+  const creatorName = (currentUser.user_metadata && currentUser.user_metadata.full_name) || (currentUser.email || '').split('@')[0] || 'A NutriGap member';
+
+  const { error } = await db.from('community_recipes').insert({
+    creator_user_id: currentUser.id,
+    creator_name: creatorName,
+    title, description: description || null,
+    external_url: url, platform, servings,
+    ingredients, tags: selectedTags,
+  });
+
+  btn.disabled = false;
+  if(error){
+    console.error('Could not post recipe:', error.message);
+    statusEl.textContent = "Couldn't post your recipe -- try again in a moment.";
+    return;
+  }
+
+  statusEl.textContent = 'Posted!';
+  document.getElementById('recipeTitle').value = '';
+  document.getElementById('recipeDesc').value = '';
+  document.getElementById('recipeUrl').value = '';
+  document.getElementById('recipeServings').value = '1';
+  document.getElementById('recipeIngredientRows').innerHTML = '';
+  addIngredientRow(); addIngredientRow();
+  recipeTagPickerEl.querySelectorAll('button.sel').forEach(b=>b.classList.remove('sel'));
+  document.getElementById('recipeForm').style.display = 'none';
+  document.getElementById('toggleRecipeFormBtn').textContent = 'Post a recipe';
+  setTimeout(()=>{ statusEl.textContent = ''; }, 3000);
+  renderCommunityRecipes(true);
+};
+
+// ---- Browse feed ----
+// Tag filter chips -- multi-select, ANDed against the "tags" column via
+// PostgREST's contains() filter (recipe must have every selected tag).
+const recipeTagFilterEl = document.getElementById('recipeTagFilter');
+RECIPE_TAG_OPTIONS.forEach(tag=>{
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.className = 'tag-chip';
+  b.textContent = tag;
+  b.dataset.tag = tag;
+  b.onclick = ()=>{ b.classList.toggle('sel'); renderCommunityRecipes(true); };
+  recipeTagFilterEl.appendChild(b);
+});
+// No shared debounce() helper exists elsewhere in this file, so this is a
+// small inline one scoped to the recipe search box only.
+let recipeSearchDebounceTimer = null;
+document.getElementById('recipeSearch').addEventListener('input', ()=>{
+  clearTimeout(recipeSearchDebounceTimer);
+  recipeSearchDebounceTimer = setTimeout(()=> renderCommunityRecipes(true), 350);
+});
+
+function recipeEmbedOrLink(r){
+  if(r.platform === 'youtube'){
+    const vid = extractYouTubeId(r.external_url);
+    if(vid) return `<div class="recipe-embed"><iframe src="https://www.youtube-nocookie.com/embed/${vid}" title="${escapeHtml(r.title)}" allow="encrypted-media; picture-in-picture" allowfullscreen loading="lazy"></iframe></div>`;
+  }
+  const label = r.platform === 'instagram' ? '📷 View on Instagram' : '🔗 View recipe link';
+  return `<a class="recipe-link-card" href="${escapeHtml(r.external_url)}" target="_blank" rel="noopener noreferrer">${label}</a>`;
+}
+
+function recipeCard(r){
+  const tags = (r.tags || []).map(t=>`<span class="tag-chip">${escapeHtml(t)}</span>`).join('');
+  const ingredientsHtml = (r.ingredients || []).map(i=>
+    `<li>${escapeHtml(i.name)}${i.quantity ? ' — ' + escapeHtml(i.quantity) : ''}${i.unit ? ' ' + escapeHtml(i.unit) : ''}</li>`
+  ).join('');
+  const isOwn = currentUser && r.creator_user_id === currentUser.id;
+  return `<div class="recipe-card" data-recipe-id="${r.id}">
+    ${recipeEmbedOrLink(r)}
+    <div class="t">${escapeHtml(r.title)}</div>
+    <div class="by">by ${escapeHtml(r.creator_name)}</div>
+    ${r.description ? `<div class="desc">${escapeHtml(r.description)}</div>` : ''}
+    <div class="servings">Makes ${r.servings} serving${r.servings===1?'':'s'}</div>
+    <div class="tags">${tags}</div>
+    <details><summary>Ingredients (${(r.ingredients||[]).length})</summary><ul>${ingredientsHtml}</ul></details>
+    <div class="actions">
+      <button class="btn ghost small share-recipe-btn">Share</button>
+      ${isOwn ? '<button class="btn ghost small delete-recipe-btn">Delete</button>' : ''}
+    </div>
+  </div>`;
+}
+
+function wireRecipeCardActions(container){
+  container.querySelectorAll('.share-recipe-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const card = btn.closest('.recipe-card');
+      const id = card.dataset.recipeId;
+      const recipe = recipeCache.find(r=> String(r.id) === String(id));
+      if(!recipe) return;
+      const code = await ensureReferralCode();
+      const inviteNote = code ? ` Join me on NutriGap: ${referralLinkFor(code)}` : '';
+      const shareText = `Check out this recipe on NutriGap: ${recipe.title}${inviteNote}`;
+      if(navigator.share){
+        try{ await navigator.share({ title: recipe.title, text: shareText, url: recipe.external_url }); return; }
+        catch(e){ if(e && e.name === 'AbortError') return; }
+      }
+      try{ await navigator.clipboard.writeText(`${shareText} ${recipe.external_url}`); showShareToast('Copied to clipboard -- paste it to share!'); }
+      catch(e){ showShareToast("Couldn't copy automatically -- here's the link: " + recipe.external_url, true); }
+    };
+  });
+  container.querySelectorAll('.delete-recipe-btn').forEach(btn=>{
+    btn.onclick = async ()=>{
+      const card = btn.closest('.recipe-card');
+      const id = card.dataset.recipeId;
+      if(!confirm('Delete this recipe? This can\'t be undone.')) return;
+      btn.disabled = true;
+      const { error } = await db.from('community_recipes').delete().eq('id', id);
+      if(error){ console.error('Could not delete recipe:', error.message); btn.disabled = false; return; }
+      card.remove();
+    };
+  });
+}
+
+const RECIPE_PAGE_SIZE = 12;
+let recipeOffset = 0;
+let recipeCache = []; // the currently-rendered page's rows, so Share doesn't need a re-fetch
+document.getElementById('recipeLoadMoreBtn').onclick = ()=> renderCommunityRecipes(false);
+
+async function renderCommunityRecipes(reset){
+  if(reset) recipeOffset = 0;
+  const listEl = document.getElementById('recipeList');
+  const emptyEl = document.getElementById('recipeEmpty');
+  const countEl = document.getElementById('recipeCount');
+  const moreBtn = document.getElementById('recipeLoadMoreBtn');
+  if(!listEl) return;
+
+  const q = document.getElementById('recipeSearch').value.trim();
+  const selectedTags = Array.from(recipeTagFilterEl.querySelectorAll('button.sel')).map(b=>b.dataset.tag);
+
+  let query = db.from('community_recipes').select('*', { count: 'exact' }).order('created_at', { ascending: false });
+  if(q) query = query.ilike('title', `%${q}%`);
+  if(selectedTags.length) query = query.contains('tags', selectedTags);
+  query = query.range(recipeOffset, recipeOffset + RECIPE_PAGE_SIZE - 1);
+
+  moreBtn.disabled = true;
+  const prevLabel = moreBtn.textContent;
+  moreBtn.textContent = 'Loading…';
+
+  const { data, error, count } = await query;
+  if(error){
+    console.error('Could not load community recipes:', error.message);
+    countEl.textContent = "Couldn't load recipes -- try again in a moment.";
+    moreBtn.style.display = 'none';
+    return;
+  }
+
+  if(reset){ listEl.innerHTML = ''; recipeCache = []; }
+  recipeCache = recipeCache.concat(data || []);
+  listEl.insertAdjacentHTML('beforeend', (data || []).map(recipeCard).join(''));
+  wireRecipeCardActions(listEl);
+  recipeOffset += (data || []).length;
+
+  const total = count || 0;
+  const shown = listEl.children.length;
+  countEl.textContent = total === 0 ? '' : `Showing ${shown} of ${total} recipe${total===1?'':'s'}`;
+  emptyEl.style.display = total === 0 ? 'block' : 'none';
+
+  const hasMore = recipeOffset < total;
   moreBtn.style.display = hasMore ? 'inline-flex' : 'none';
   moreBtn.disabled = false;
   moreBtn.textContent = prevLabel === 'Loading…' ? 'Show more' : prevLabel;
