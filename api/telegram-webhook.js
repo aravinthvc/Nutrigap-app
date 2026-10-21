@@ -1370,8 +1370,12 @@ async function loadMealBoxItems() {
   return rows || [];
 }
 
+// Same owner_user_id filter and same reason as loadFoodCatalog() above --
+// this runs with the service-role key (no RLS), so it has to exclude
+// other people's pending "scan a packaged food" submissions itself,
+// otherwise they'd turn up as suggested foods in someone else's gap ideas.
 async function loadFoodsFull() {
-  const rows = await db.select('foods');
+  const rows = await db.select('foods', { filters: ['owner_user_id=is.null'] });
   return (rows || []).map(nc.mapFoodRow);
 }
 
@@ -1551,8 +1555,16 @@ async function mealIdeas(userId, targetNutrientKey) {
 
 // ---------- Meal logging ----------
 
+// `owner_user_id=is.null` matters here specifically because this runs
+// with the service-role key, which bypasses RLS entirely -- unlike the
+// website (where RLS itself keeps a user from seeing anyone else's
+// personal "scan a packaged food" submissions, see
+// add_packaged_food_scanning.sql), this query has no such protection
+// built in, so it has to filter out every pending/personal item itself or
+// it would match Telegram meal text against other people's private,
+// not-yet-approved scans.
 async function loadFoodCatalog() {
-  const rows = await db.select('foods', { columns: 'id,name', order: 'name.asc' });
+  const rows = await db.select('foods', { columns: 'id,name', filters: ['owner_user_id=is.null'], order: 'name.asc' });
   return rows || [];
 }
 
