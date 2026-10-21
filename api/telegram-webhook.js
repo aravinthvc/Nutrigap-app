@@ -54,9 +54,9 @@ const MEAL_OPTIONS = [
 // handler below) -- free-text still works exactly as before this existed.
 const MAIN_MENU_KEYBOARD = [
   ['📊 My gap', '🍽 Meal ideas'],
-  ['📝 Log a meal', '📅 Appointments'],
-  ['📄 My documents', '👥 Invite friends'],
-  ['❓ Help'],
+  ['📝 Log a meal', '🏃 Log activity'],
+  ['📅 Appointments', '📄 My documents'],
+  ['👥 Invite friends', '❓ Help'],
 ];
 
 // `keyboard`, when given, is an array of rows of {text, callback_data} --
@@ -174,7 +174,7 @@ async function recentContext(userId, limit) {
 // came from the website's code flow and never needed it).
 async function findLink(chatId) {
   const rows = await db.select('telegram_links', {
-    columns: 'user_id,onboarding_state,pending_log,pending_upload,source,nudges_enabled',
+    columns: 'user_id,onboarding_state,pending_log,pending_upload,pending_activity_log,source,nudges_enabled',
     filters: ['chat_id=eq.' + encodeURIComponent(String(chatId))],
     limit: 1,
   });
@@ -686,6 +686,15 @@ async function handleCallbackQuery(cq) {
     return;
   }
 
+  if (data.startsWith('actlog:')) {
+    if (!link.pending_activity_log || !link.pending_activity_log.step) {
+      await sendMessage(chatId, "That button doesn't apply anymore -- tell me what you did, or tap 🏃 Log activity to start again.");
+      return;
+    }
+    await handleActivityLogButton(chatId, link.user_id, link.pending_activity_log, data);
+    return;
+  }
+
   if (data.startsWith('doc:')) {
     await handleDocumentButton(chatId, link.user_id, data);
     return;
@@ -1155,13 +1164,13 @@ async function handleMealPhoto(chatId, userId, state, fileId) {
 // normally from there.
 const LOG_FLOW_ESCAPE_COMMANDS = new Set([
   '/start', '/help', '/gap', '/today', '/meals', '/ideas', '/appointments',
-  '/unlink', '/nudges', '/nudges on', '/nudges off', '/log',
+  '/unlink', '/nudges', '/nudges on', '/nudges off', '/log', '/logactivity',
   '/documents', '/latestreport', '/latestprescription',
   '/uploadreport', '/uploadvisit', '/invite', '/recap',
 ]);
 function isEscapeFromLogFlow(text) {
   if (!text) return false;
-  if (text === '📝 Log a meal') return true;
+  if (text === '📝 Log a meal' || text === '🏃 Log activity') return true;
   const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
   return LOG_FLOW_ESCAPE_COMMANDS.has(lower);
 }
@@ -1172,9 +1181,107 @@ function isEscapeFromLogFlow(text) {
 // whichever guided flow happens to be in progress.
 function isEscapeFromUploadFlow(text) {
   if (!text) return false;
-  if (text === '📝 Log a meal') return true;
+  if (text === '📝 Log a meal' || text === '🏃 Log activity') return true;
   const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
   return LOG_FLOW_ESCAPE_COMMANDS.has(lower);
+}
+
+// Same idea again, for the guided activity-logging flow just below --
+// starting that flow (button or /logactivity) also escapes this one.
+function isEscapeFromActivityLogFlow(text) {
+  if (!text) return false;
+  if (text === '📝 Log a meal' || text === '🏃 Log activity') return true;
+  const lower = (BUTTON_TO_COMMAND[text] || text).toLowerCase();
+  return LOG_FLOW_ESCAPE_COMMANDS.has(lower);
+}
+
+// ---------- Guided activity logging (date confirmation, then what+how long) ----------
+//
+// Mirrors "Guided meal logging" above, minus the "which meal" step -- an
+// activity log has no equivalent of breakfast/lunch/dinner/snack to
+// confirm, so this flow is just: confirm which date, then (if not already
+// supplied up front) what was done and for how long. Same reasons apply
+// for not silently assuming "today": backfilling yesterday's run gets
+// attributed correctly instead of guessed at.
+//
+// State lives in telegram_links.pending_activity_log (jsonb), same pattern
+// as pending_log: {step, text, entryDate}. step is one of 'date' |
+// 'custom_date' | 'activity'. `text` holds the raw "what I did" message
+// when it was already supplied up front (the free-text entry point) -- in
+// that case the flow skips straight to logging once the date is confirmed.
+
+async function setPendingActivityLog(chatId, state) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_activity_log: state });
+}
+
+async function clearPendingActivityLog(chatId) {
+  await db.update('telegram_links', ['chat_id=eq.' + encodeURIComponent(String(chatId))], { pending_activity_log: null });
+}
+
+async function startActivityLogFlow(chatId, text) {
+  const state = { step: 'date', text: text || null, entryDate: null };
+  await setPendingActivityLog(chatId, state);
+  await askActivityDate(chatId, state);
+}
+
+async function askActivityDate(chatId, state) {
+  await setPendingActivityLog(chatId, state);
+  await sendMessage(chatId, 'Which date was this activity?', [
+    [{ text: 'Today', callback_data: 'actlog:date:today' }, { text: 'Yesterday', callback_data: 'actlog:date:yesterday' }],
+    [{ text: '📅 Type a date', callback_data: 'actlog:date:custom' }],
+  ]);
+}
+
+async function askActivityItems(chatId, state) {
+  await setPendingActivityLog(chatId, state);
+  await sendMessage(chatId, 'What did you do, and for how long? e.g. "30 min walk" or "45 minutes of yoga".');
+}
+
+async function reaskCurrentActivityStep(chatId, state) {
+  if (state.step === 'date') { await askActivityDate(chatId, state); return; }
+  await askActivityItems(chatId, state);
+}
+
+async function finishActivityLog(chatId, userId, state) {
+  await sendTyping(chatId);
+  const { reply, loggedAnything } = await logActivity(userId, state.text, state.entryDate);
+  await logMessage(userId, chatId, 'out', reply, 'log_activity');
+  await sendMessage(chatId, reply);
+  if (loggedAnything) {
+    await clearPendingActivityLog(chatId);
+  } else {
+    // Same fix as finishMealLog() above -- don't dead-end the flow on a
+    // catalog-match miss, ask for it in different words instead.
+    await askActivityItems(chatId, { ...state, text: null });
+  }
+}
+
+async function proceedAfterActivityDate(chatId, userId, state) {
+  // Free-text entry point already supplied what they did -- no need to
+  // ask a second time, finish the log now that the date is confirmed.
+  if (state.text) { await finishActivityLog(chatId, userId, state); return; }
+  await askActivityItems(chatId, state);
+}
+
+async function handleActivityLogButton(chatId, userId, state, data) {
+  const parts = data.split(':');
+  const kind = parts[1];
+  const value = parts.slice(2).join(':');
+
+  if (kind === 'date') {
+    if (state.step !== 'date') { await reaskCurrentActivityStep(chatId, state); return; }
+    if (value === 'today' || value === 'yesterday') {
+      const entryDate = value === 'today' ? nc.istDateStr(new Date()) : nc.istDateStr(new Date(Date.now() - 24 * 60 * 60 * 1000));
+      await proceedAfterActivityDate(chatId, userId, { ...state, entryDate, step: 'activity' });
+      return;
+    }
+    if (value === 'custom') {
+      await setPendingActivityLog(chatId, { ...state, step: 'custom_date' });
+      await sendMessage(chatId, 'What date? Send it like "2026-10-05" or "5 Oct" (up to 90 days back, not in the future).');
+      return;
+    }
+  }
+  await reaskCurrentActivityStep(chatId, state);
 }
 
 // ---------- Gap summary ----------
@@ -1609,6 +1716,147 @@ async function logMeal(userId, text, meal, entryDate) {
     reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the catalog yet, flagged for the team.)`;
   }
   reply += ' Ask "what\'s my gap today?" any time to see how that shifted things.';
+  return { reply, loggedAnything: true };
+}
+
+// ---------- Activity logging ----------
+//
+// Mirrors the "Meal logging" section above, for the website's Activity log
+// feature instead of the diet log: same exact-catalog-match guardrail
+// (never invent or guess-spell an activity name), same honest backlog on a
+// miss (activity_requests, the exact same idea as food_requests), and the
+// exact same calorie-burned formula the website's "Add to log" button
+// uses (met * weight_kg * (duration_minutes / 60)) -- so a run logged here
+// and a run logged on the website are never computed differently.
+
+async function loadActivityCatalog() {
+  const rows = await db.select('activities', { columns: 'id,name,met', order: 'name.asc' });
+  return rows || [];
+}
+
+// Feeds Telegram's unmatched activities into activity_requests -- the same
+// backlog-not-dead-end idea as recordFoodRequests() above, just for the
+// activity catalog instead of the food one. Best-effort, same as that one.
+async function recordActivityRequests(userId, queryTexts) {
+  const names = (queryTexts || []).map(t => String(t || '').trim()).filter(Boolean);
+  if (names.length === 0) return;
+  try {
+    await db.insert('activity_requests', names.map(requested_name => ({ user_id: userId, requested_name })), { returning: false });
+  } catch (e) {
+    console.error('Could not record activity request(s) from Telegram:', e.message);
+  }
+}
+
+async function extractActivityItems(apiKey, text, catalog) {
+  const catalogList = catalog.map(a => a.name).join('\n');
+  const systemPrompt = `You extract activities (exercise/physical activity) from a message someone sent about what they did, matching each one against NutriGap's real activity catalog.
+
+Rules:
+- Only ever use an activity name that appears EXACTLY (character for character) in the catalog list below. Never invent, rename, or guess-spell an activity that isn't in the list.
+- If something the person mentioned has no reasonable match in the catalog, include it with "name": null and put what they said in "queryText".
+- "durationMinutes" is how long they did it, in minutes. Default to 30 if a duration isn't stated.
+
+Respond with ONLY a JSON object, no markdown, no commentary, in exactly this shape:
+{"items": [{"name": "...", "queryText": "...", "durationMinutes": 30}]}
+
+Catalog (one activity name per line):
+${catalogList}`;
+
+  const response = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
+    body: JSON.stringify({
+      model: 'claude-sonnet-5',
+      max_tokens: 1000,
+      system: systemPrompt,
+      messages: [{ role: 'user', content: text }],
+    }),
+  });
+  if (!response.ok) throw new Error('Anthropic API error: ' + (await response.text()));
+  const data = await response.json();
+  const textBlock = (data.content || []).find(b => b.type === 'text');
+  let cleaned = ((textBlock && textBlock.text) || '').replace(/```json|```/g, '').trim();
+  const start = cleaned.indexOf('{'), end = cleaned.lastIndexOf('}');
+  if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
+  let parsed;
+  try { parsed = JSON.parse(cleaned); } catch (e) { return { items: [] }; }
+
+  // Same guardrail as extractMealItems() above -- only accept an item whose
+  // name is an exact match in the real catalog, never trust the model's
+  // own spelling.
+  const validNames = new Set(catalog.map(a => a.name));
+  const items = Array.isArray(parsed.items) ? parsed.items.filter(it => it && typeof it === 'object') : [];
+  return {
+    items: items.map(it => ({
+      name: typeof it.name === 'string' && validNames.has(it.name) ? it.name : null,
+      queryText: typeof it.queryText === 'string' ? it.queryText : (typeof it.name === 'string' ? it.name : ''),
+      durationMinutes: Number.isFinite(it.durationMinutes) && it.durationMinutes > 0 && it.durationMinutes <= 720
+        ? Math.round(it.durationMinutes) : 30,
+    })),
+  };
+}
+
+// Falls back to the website's own default (see addActivityBtn's `|| 68` in
+// index.html) when the profile has no weight yet, rather than refusing to
+// log anything -- same default value, so the two channels never disagree
+// about what they fell back to, and it's never worse than what the website
+// itself already does when weight is missing.
+async function loadWeightKg(userId) {
+  try {
+    const rows = await db.select('profiles', { columns: 'weight_kg', filters: ['user_id=eq.' + userId], limit: 1 });
+    const w = rows && rows[0] && Number(rows[0].weight_kg);
+    return Number.isFinite(w) && w > 0 ? w : 68;
+  } catch (e) {
+    console.error('Could not load weight for activity calorie calc:', e.message);
+    return 68;
+  }
+}
+
+// `entryDate` is the value already confirmed via the guided flow above
+// (startActivityLogFlow / handleActivityLogButton) -- never guessed here.
+// Returns {reply, loggedAnything}, same reason as logMeal() above: a failed
+// match needs to re-ask rather than silently drop the person out of an
+// in-progress log.
+async function logActivity(userId, text, entryDate) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { reply: "Something's misconfigured on the server side -- Aravinth's been notified.", loggedAnything: false };
+
+  const catalog = await loadActivityCatalog();
+  if (catalog.length === 0) return { reply: "I couldn't reach the activity catalog just now -- try again in a moment.", loggedAnything: false };
+
+  const { items } = await extractActivityItems(apiKey, text, catalog);
+  if (items.length === 0) {
+    return { reply: "I couldn't tell what activity that was -- try naming it more directly, e.g. \"30 min walk\" or \"45 minutes of yoga\".", loggedAnything: false };
+  }
+
+  const matched = items.filter(it => it.name);
+  const unmatched = items.filter(it => !it.name);
+
+  if (matched.length === 0) {
+    await recordActivityRequests(userId, unmatched.map(u => u.queryText));
+    return { reply: `I couldn't find "${unmatched.map(u => u.queryText).join('", "')}" in the activity list yet -- I've flagged it for the team to add. Try describing it differently in the meantime, or it may just not be in there yet.`, loggedAnything: false };
+  }
+
+  const weightKg = await loadWeightKg(userId);
+  const entryDateStr = entryDate || nc.istDateStr(new Date());
+  const nameToActivity = new Map(catalog.map(a => [a.name, a]));
+  const rows = matched.map(it => {
+    const activity = nameToActivity.get(it.name);
+    const caloriesBurned = Math.round(activity.met * weightKg * (it.durationMinutes / 60));
+    return {
+      user_id: userId, entry_date: entryDateStr, activity_id: activity.id,
+      duration_minutes: it.durationMinutes, calories_burned: caloriesBurned, source: 'manual',
+    };
+  });
+  if (rows.length > 0) await db.insert('activity_entries', rows, { returning: false });
+
+  const loggedLines = matched.map((it, i) => `${it.durationMinutes} min of ${it.name} (~${rows[i].calories_burned} kcal burned)`);
+  let reply = `Logged for ${dateLabelFor(entryDateStr)}: ${loggedLines.join(', ')}.`;
+  if (unmatched.length > 0) {
+    await recordActivityRequests(userId, unmatched.map(u => u.queryText));
+    reply += ` (Couldn't match: "${unmatched.map(u => u.queryText).join('", "')}" -- not in the activity list yet, flagged for the team.)`;
+  }
+  reply += ' Calories burned are estimated from your weight (same formula as the website\'s Activity tab) -- see it there any time.';
   return { reply, loggedAnything: true };
 }
 
@@ -2271,6 +2519,7 @@ async function classifyIntent(apiKey, text, context) {
 
 Choose exactly one "intent":
 - "log_meal" -- they're describing food they ate (or are about to eat) that should be logged.
+- "log_activity" -- they're describing exercise or physical activity they did (or are about to do) that should be logged (e.g. "I walked 30 minutes", "did yoga for 45 min", "ran 5k"). Not food.
 - "gap_summary" -- they're asking about their nutrition gap, targets, or how today's log looks.
 - "meal_ideas" -- they're asking what to eat, for meal/food suggestions, or how to close their nutrition gap (e.g. "what should I eat?", "give me some meal ideas", "what can I eat to hit my protein target?"). Not the same as gap_summary -- that's asking what today's numbers look like, this is asking what to DO about it.
 - "appointment" -- anything about booking, requesting, listing, or cancelling a consultation with a dietitian. Also set "appointmentAction" to "book", "list", or "cancel".
@@ -2300,7 +2549,7 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
     const start = cleaned.indexOf('{'), end = cleaned.lastIndexOf('}');
     if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
     const parsed = JSON.parse(cleaned);
-    const allowed = ['log_meal', 'gap_summary', 'meal_ideas', 'appointment', 'help', 'unlink', 'dietitian_chat'];
+    const allowed = ['log_meal', 'log_activity', 'gap_summary', 'meal_ideas', 'appointment', 'help', 'unlink', 'dietitian_chat'];
     return {
       intent: allowed.includes(parsed.intent) ? parsed.intent : 'dietitian_chat',
       appointmentAction: ['book', 'list', 'cancel'].includes(parsed.appointmentAction) ? parsed.appointmentAction : 'book',
@@ -2312,8 +2561,9 @@ Respond with ONLY a JSON object, no markdown, no commentary, in exactly this sha
 
 const HELP_TEXT =
   "Here's what I can do:\n\n" +
-  '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Appointments, My documents, Help\n' +
+  '• Use the buttons below any time -- My gap, Meal ideas, Log a meal, Log activity, Appointments, My documents, Help\n' +
   '• Tell me what you ate ("2 chapathis with palak matar for lunch"), send a photo of the plate, or tap "📝 Log a meal" / send /log -- any of those gets things started, I\'ll ask which meal and which date, then log it. For a photo, I\'ll try to identify what\'s on the plate and show you before logging anything; if I\'m not confident I\'ll save it for the team to review instead and ask you to type it\n' +
+  '• Tell me about exercise you did ("30 min walk", "did yoga for 45 minutes"), or tap "🏃 Log activity" / send /logactivity -- I\'ll ask which date, then log it with calories burned estimated from your weight (same formula as the website\'s Activity tab)\n' +
   '• Ask "what\'s my gap today?" for your macro/micro summary\n' +
   '• Ask "what should I eat?" for BFB meal-box ideas to help close today\'s gap, or name a specific nutrient ("suggestions to bridge my vitamin C gap") for ideas just for that one\n' +
   '• Just talk to me about your goals -- I\'m the same AI first-line as the Dietitian tab\n' +
@@ -2329,9 +2579,9 @@ const HELP_TEXT =
 // Button taps from MAIN_MENU_KEYBOARD arrive back as plain text messages --
 // this maps the ones that are just shortcuts for an existing slash command
 // onto that command's text, so one block of logic handles both. "📝 Log a
-// meal" isn't in here: it starts the guided logging flow directly (see the
-// dedicated check for it in the main handler), it doesn't map onto another
-// command's text.
+// meal" and "🏃 Log activity" aren't in here: each starts its own guided
+// logging flow directly (see the dedicated checks for them in the main
+// handler), neither maps onto another command's text.
 const BUTTON_TO_COMMAND = {
   '📊 My gap': '/gap',
   '🍽 Meal ideas': '/meals',
@@ -2454,10 +2704,60 @@ module.exports = async function handler(req, res) {
       }
     }
 
+    // Mid-way through the guided activity-logging flow (see "Guided
+    // activity logging" above) -- same intercept-before-anything-else
+    // pattern as pending_log above (no photo step here, so there's one
+    // fewer branch than that one).
+    if (link.pending_activity_log && link.pending_activity_log.step) {
+      const state = link.pending_activity_log;
+      if (isEscapeFromActivityLogFlow(text)) {
+        await clearPendingActivityLog(chatId);
+        // falls through to normal handling below with the original message
+      } else if (state.step === 'date') {
+        await sendMessage(chatId, 'Tap one of the buttons above to answer that one.');
+        await reaskCurrentActivityStep(chatId, state);
+        res.status(200).json({ ok: true });
+        return;
+      } else if (state.step === 'custom_date') {
+        if (!text) {
+          await sendMessage(chatId, 'What date? Send it like "2026-10-05" or "5 Oct".');
+          res.status(200).json({ ok: true });
+          return;
+        }
+        const entryDate = parseLoggedDate(text);
+        if (!entryDate) {
+          await sendMessage(chatId, "I couldn't read that as a date -- try \"2026-10-05\" or \"5 Oct\" (up to 90 days back, not in the future).");
+          res.status(200).json({ ok: true });
+          return;
+        }
+        await proceedAfterActivityDate(chatId, userId, { ...state, entryDate, step: 'activity' });
+        res.status(200).json({ ok: true });
+        return;
+      } else if (state.step === 'activity') {
+        if (text) {
+          await logMessage(userId, chatId, 'in', text, 'log_activity');
+          await finishActivityLog(chatId, userId, { ...state, text });
+          res.status(200).json({ ok: true });
+          return;
+        }
+        await sendMessage(chatId, 'Type what you did, and for how long.');
+        res.status(200).json({ ok: true });
+        return;
+      }
+    }
+
     // A tap on the persistent menu's "📝 Log a meal" button (or /log) starts
     // the guided flow directly -- see "Guided meal logging" above.
     if (text === '📝 Log a meal' || text.toLowerCase() === '/log') {
       await startMealLogFlow(chatId, null);
+      res.status(200).json({ ok: true });
+      return;
+    }
+
+    // Same idea for "🏃 Log activity" (or /logactivity) -- see "Guided
+    // activity logging" above.
+    if (text === '🏃 Log activity' || text.toLowerCase() === '/logactivity') {
+      await startActivityLogFlow(chatId, null);
       res.status(200).json({ ok: true });
       return;
     }
@@ -2635,6 +2935,14 @@ module.exports = async function handler(req, res) {
     // twice -- see "Guided meal logging" above. It replies for itself.
     if (intent === 'log_meal') {
       await startMealLogFlow(chatId, text);
+      res.status(200).json({ ok: true });
+      return;
+    }
+
+    // Same idea for exercise-sounding free text -- starts the guided
+    // activity+date confirmation flow, see "Guided activity logging" above.
+    if (intent === 'log_activity') {
+      await startActivityLogFlow(chatId, text);
       res.status(200).json({ ok: true });
       return;
     }
