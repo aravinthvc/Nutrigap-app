@@ -1072,6 +1072,43 @@
                 <button class="btn small" id="requestFoodSendBtn" type="button">Send</button>
               </div>
             </div>
+
+            <div id="scanPackagedRow" style="margin-top:10px;">
+              <button class="btn ghost small" id="scanPackagedBtn" type="button">📦 Scan a packaged food</button>
+              <input type="file" id="packagedPhotoInput" accept="image/*" capture="environment" style="display:none;">
+              <div id="packagedScanStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
+
+              <div id="packagedScanReview" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+                <div class="note" style="margin-top:0;">Check every value below before saving — this is read straight off the label, and a blurry photo can misread a number. Anything blank wasn't printed on the label; only fill it in if you know it for certain, otherwise it's left out of your nutrient totals rather than guessed at.</div>
+                <div class="field">
+                  <label for="pkProductName">Product name</label>
+                  <input type="text" id="pkProductName" placeholder="e.g. Classic Salted Potato Chips">
+                </div>
+                <div class="field">
+                  <label for="pkBrand">Brand</label>
+                  <input type="text" id="pkBrand" placeholder="e.g. Lay's">
+                </div>
+                <div class="field">
+                  <label for="pkServingSize">Serving size (as printed)</label>
+                  <input type="text" id="pkServingSize" placeholder="e.g. 30g (about 1 handful)">
+                </div>
+                <div id="pkNutrientGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin:12px 0;"></div>
+                <div id="pkAdditivesWrap" style="display:none; margin-bottom:10px; font-size:12.5px; color:var(--ink-soft);"></div>
+                <div id="pkIngredientsWrap" style="display:none; margin-bottom:10px;">
+                  <label style="font-size:12.5px; color:var(--ink-soft); font-weight:500; display:block; margin-bottom:4px;">Ingredients (as printed)</label>
+                  <div id="pkIngredientsText" class="note" style="margin-top:0;"></div>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;">
+                  <div class="field" style="margin-bottom:0;">
+                    <label for="pkServings">Servings you had</label>
+                    <input type="number" id="pkServings" value="1" min="0.25" step="0.25" style="width:90px;">
+                  </div>
+                  <button class="btn" id="pkSaveBtn" type="button">Save &amp; log it</button>
+                  <button class="btn ghost" id="pkCancelBtn" type="button">Cancel</button>
+                </div>
+                <div id="pkSaveStatus" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>
+              </div>
+            </div>
           </div>
 
           <div class="card" style="margin-top:20px;">
@@ -2651,7 +2688,15 @@ function mapMealBoxRow(row){
 }
 
 async function loadFoods(){
-  const { data, error } = await db.from('foods').select('*').order('name');
+  // The shared catalog (owner_user_id is null) plus this person's own
+  // scanned-but-not-yet-approved items (owner_user_id = them) -- RLS on
+  // `foods` already enforces this same boundary server-side (see
+  // add_packaged_food_scanning.sql), this just mirrors it in the query so
+  // a signed-out call doesn't 400 on the `.or()` referencing currentUser.
+  const query = db.from('foods').select('*').order('name');
+  const { data, error } = currentUser
+    ? await query.or(`owner_user_id.is.null,owner_user_id.eq.${currentUser.id}`)
+    : await query.is('owner_user_id', null);
   if(error){ console.error('Could not load foods:', error.message); return; }
   FOODS = data.map(mapFoodRow);
   const foodDatalist = document.getElementById('foodDatalist');
@@ -3142,6 +3187,209 @@ document.getElementById('photoInput').onchange = async ()=>{
   } finally {
     input.value = '';
   }
+};
+
+// ---------- Scan a packaged food (new) ----------
+// Reads a retail product's nutrition label via Claude vision (facts
+// printed on the label only -- see handlePackagedFoodScan in
+// api/ai-helpers.js), lets the person check/correct every value before
+// anything is saved (same confirm-before-logging principle as the photo
+// meal-log flow above), then saves it straight into `foods` -- scoped
+// privately to them (owner_user_id + review_status:'pending') until
+// Aravinth approves it into the shared catalog. Saving also logs it to
+// today's diet log in the same action, since the whole point is "I'm
+// eating this right now, make it countable."
+
+const PACKAGED_NUTRIENT_FIELDS = [
+  { key: 'kcal', column: 'kcal', label: 'Calories', unit: 'kcal' },
+  { key: 'protein', column: 'protein', label: 'Protein', unit: 'g' },
+  { key: 'carbs', column: 'carbs', label: 'Carbohydrates', unit: 'g' },
+  { key: 'fat', column: 'fat', label: 'Fat', unit: 'g' },
+  { key: 'fiber', column: 'fiber', label: 'Fiber', unit: 'g' },
+  { key: 'sodium', column: 'sodium', label: 'Sodium', unit: 'mg' },
+  { key: 'iron', column: 'iron', label: 'Iron', unit: 'mg' },
+  { key: 'calcium', column: 'calcium', label: 'Calcium', unit: 'mg' },
+  { key: 'vitD', column: 'vit_d', label: 'Vitamin D', unit: 'mcg' },
+  { key: 'vitB12', column: 'vit_b12', label: 'Vitamin B12', unit: 'mcg' },
+  { key: 'vitC', column: 'vit_c', label: 'Vitamin C', unit: 'mg' },
+  { key: 'vitA', column: 'vit_a', label: 'Vitamin A', unit: 'mcg' },
+  { key: 'vitE', column: 'vit_e', label: 'Vitamin E', unit: 'mg' },
+  { key: 'vitK', column: 'vit_k', label: 'Vitamin K', unit: 'mcg' },
+  { key: 'folate', column: 'folate', label: 'Folate (B9)', unit: 'mcg' },
+  { key: 'vitB6', column: 'vit_b6', label: 'Vitamin B6', unit: 'mg' },
+  { key: 'magnesium', column: 'magnesium', label: 'Magnesium', unit: 'mg' },
+  { key: 'zinc', column: 'zinc', label: 'Zinc', unit: 'mg' },
+  { key: 'potassium', column: 'potassium', label: 'Potassium', unit: 'mg' },
+  { key: 'selenium', column: 'selenium', label: 'Selenium', unit: 'mcg' },
+];
+
+let pkScan = null; // { extracted, base64, mediaType } for the in-progress scan
+
+function base64ToBlob(base64, mediaType){
+  const bytes = atob(base64);
+  const arr = new Uint8Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+  return new Blob([arr], { type: mediaType });
+}
+
+function renderPkNutrientGrid(extracted){
+  const grid = document.getElementById('pkNutrientGrid');
+  grid.innerHTML = PACKAGED_NUTRIENT_FIELDS.map(f => {
+    const val = extracted && Number.isFinite(extracted[f.key]) ? extracted[f.key] : '';
+    return `<div>
+      <label style="font-size:11.5px; color:var(--ink-soft); display:block; margin-bottom:2px;">${f.label} (${f.unit})</label>
+      <input type="number" step="any" class="pk-nutrient-input" data-key="${f.key}" value="${val}" placeholder="not printed">
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('scanPackagedBtn').onclick = ()=> document.getElementById('packagedPhotoInput').click();
+document.getElementById('packagedPhotoInput').onchange = async ()=>{
+  const input = document.getElementById('packagedPhotoInput');
+  if(!input.files.length) return;
+  const file = input.files[0];
+  const status = document.getElementById('packagedScanStatus');
+  status.style.color = 'var(--ink-faint)';
+  status.textContent = 'Reading the label…';
+  document.getElementById('packagedScanReview').style.display = 'none';
+
+  try{
+    // Higher resolution than the meal-photo flow (1024px) -- a nutrition
+    // panel's text is small and needs to stay legible after downscaling.
+    const base64 = await resizeImageToBase64(file, 1600);
+    const mediaType = 'image/jpeg';
+    const res = await fetch('/api/ai-helpers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ kind: 'packaged-food-scan', imageBase64: base64, mediaType }),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+
+    if(data.notAFoodLabel){
+      status.style.color = 'var(--rust)';
+      status.textContent = "Couldn't find a nutrition label in that photo — try a clearer shot of the nutrition panel.";
+      return;
+    }
+
+    pkScan = { extracted: data, base64, mediaType };
+    document.getElementById('pkProductName').value = data.productName || '';
+    document.getElementById('pkBrand').value = data.brand || '';
+    document.getElementById('pkServingSize').value = data.servingSizeText || '';
+    renderPkNutrientGrid(data);
+
+    const additivesWrap = document.getElementById('pkAdditivesWrap');
+    if(data.unquantifiedAdditives && data.unquantifiedAdditives.length){
+      additivesWrap.style.display = 'block';
+      additivesWrap.textContent = 'Ingredients list also names (no amount printed): ' + data.unquantifiedAdditives.join(', ') + ' — not counted toward your totals.';
+    } else {
+      additivesWrap.style.display = 'none';
+    }
+
+    const ingWrap = document.getElementById('pkIngredientsWrap');
+    if(data.ingredientsText){
+      ingWrap.style.display = 'block';
+      document.getElementById('pkIngredientsText').textContent = data.ingredientsText;
+    } else {
+      ingWrap.style.display = 'none';
+    }
+
+    document.getElementById('pkServings').value = 1;
+    document.getElementById('pkSaveStatus').textContent = '';
+    status.style.color = 'var(--teal-deep)';
+    status.textContent = 'Here\'s what was on the label — check it over, then save.';
+    document.getElementById('packagedScanReview').style.display = 'block';
+  } catch(e){
+    console.error('Packaged food scan error:', e);
+    status.style.color = 'var(--rust)';
+    status.textContent = "Couldn't read that label — try again with a clearer, well-lit photo of the nutrition panel.";
+  } finally {
+    input.value = '';
+  }
+};
+
+document.getElementById('pkCancelBtn').onclick = ()=>{
+  pkScan = null;
+  document.getElementById('packagedScanReview').style.display = 'none';
+  document.getElementById('packagedScanStatus').textContent = '';
+};
+
+document.getElementById('pkSaveBtn').onclick = async ()=>{
+  if(!currentUser || !pkScan) return;
+  const statusEl = document.getElementById('pkSaveStatus');
+  const name = document.getElementById('pkProductName').value.trim();
+  if(!name){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = 'Give it a product name before saving.';
+    return;
+  }
+  const brand = document.getElementById('pkBrand').value.trim() || null;
+  const servingSizeText = document.getElementById('pkServingSize').value.trim() || null;
+  const servings = +document.getElementById('pkServings').value || 1;
+
+  const nutrientPatch = {};
+  document.querySelectorAll('.pk-nutrient-input').forEach(inp=>{
+    const field = PACKAGED_NUTRIENT_FIELDS.find(f => f.key === inp.dataset.key);
+    const raw = inp.value.trim();
+    nutrientPatch[field.column] = raw === '' ? null : (+raw);
+  });
+
+  statusEl.style.color = 'var(--ink-faint)';
+  statusEl.textContent = 'Saving — uploading the label photo…';
+
+  let photoStoragePath = null;
+  try{
+    const blob = base64ToBlob(pkScan.base64, pkScan.mediaType);
+    photoStoragePath = `${currentUser.id}/packaged-foods/${Date.now()}-label.jpg`;
+    const { error: uploadErr } = await db.storage.from('medical-documents').upload(photoStoragePath, blob, { upsert: false, contentType: pkScan.mediaType });
+    if(uploadErr){
+      console.error('Label photo upload failed:', uploadErr.message);
+      photoStoragePath = null; // not fatal -- the extracted values below still get saved
+    }
+  } catch(e){
+    console.error('Label photo upload failed:', e.message);
+    photoStoragePath = null;
+  }
+
+  statusEl.textContent = 'Saving…';
+  const keywordTokens = Array.from(new Set(
+    (brand ? brand + ' ' : '').concat(name).toLowerCase().split(/\s+/).filter(Boolean)
+  ));
+
+  const { data: inserted, error: insertErr } = await db.from('foods').insert({
+    name, brand, keywords: keywordTokens,
+    ...nutrientPatch,
+    serving_size_text: servingSizeText,
+    ingredients_text: pkScan.extracted.ingredientsText || null,
+    unquantified_additives: pkScan.extracted.unquantifiedAdditives || [],
+    photo_storage_path: photoStoragePath,
+    owner_user_id: currentUser.id,
+    review_status: 'pending',
+    source: 'packaged_scan',
+    submitted_at: new Date().toISOString(),
+  }).select().single();
+
+  if(insertErr){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = "Couldn't save: " + insertErr.message;
+    if(photoStoragePath) await db.storage.from('medical-documents').remove([photoStoragePath]);
+    return;
+  }
+
+  const meal = getSel('mealGroup');
+  const { error: logErr } = await db.from('diet_entries').insert({
+    user_id: currentUser.id, entry_date: state.currentDate, food_id: inserted.id, servings, meal
+  });
+
+  await loadFoods();
+  await refreshDietLog();
+
+  pkScan = null;
+  document.getElementById('packagedScanReview').style.display = 'none';
+  document.getElementById('packagedScanStatus').style.color = 'var(--teal-deep)';
+  document.getElementById('packagedScanStatus').textContent = logErr
+    ? 'Saved to your personal food list, but logging it today failed — find it in the food search above and add it manually.'
+    : "Saved and logged — it's yours to use any time now without rescanning. Aravinth's team reviews new scans before they join the shared catalog for everyone.";
 };
 
 function renderParseReview(){
