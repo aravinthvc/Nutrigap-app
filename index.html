@@ -1076,6 +1076,7 @@
             <div id="scanPackagedRow" style="margin-top:10px;">
               <button class="btn ghost small" id="scanPackagedBtn" type="button">📦 Scan a packaged food</button>
               <input type="file" id="packagedPhotoInput" accept="image/*" capture="environment" style="display:none;">
+              <div id="pkPhotoStager" style="display:none;"></div>
               <div id="packagedScanStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
 
               <div id="packagedScanReview" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
@@ -1113,6 +1114,7 @@
             <div id="scanSupplementRow" style="margin-top:10px;">
               <button class="btn ghost small" id="scanSupplementBtn" type="button">💊 Scan a supplement</button>
               <input type="file" id="supplementPhotoInput" accept="image/*" capture="environment" style="display:none;">
+              <div id="supPhotoStager" style="display:none;"></div>
               <div id="supplementScanStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
 
               <div id="supplementScanReview" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
@@ -3263,7 +3265,7 @@ const PACKAGED_NUTRIENT_FIELDS = [
   { key: 'selenium', column: 'selenium', label: 'Selenium', unit: 'mcg' },
 ];
 
-let pkScan = null; // { extracted, base64, mediaType } for the in-progress scan
+let pkScan = null; // { extracted, photos: [{base64, mediaType}, ...] } for the in-progress scan
 
 function base64ToBlob(base64, mediaType){
   const bytes = atob(base64);
@@ -3275,20 +3277,26 @@ function base64ToBlob(base64, mediaType){
 // Shared mechanism (not flow logic) for both "scan a packaged food" and
 // "scan a supplement": right after either save handler inserts its row,
 // this immediately asks api/ai-helpers.js's 'review-submission' kind to
-// check the saved values against the same photo and act on its own
+// check the saved values against the same photo(s) and act on its own
 // verdict (see add_ai_review.sql) -- approved rows join the shared
 // catalog right away, rejected ones stay private with a specific reason,
-// no admin queue in normal operation. Returns {verdict, reason} on
-// success, or {verdict:'error', message} if the review call itself
-// couldn't be completed -- the row is left exactly as the earlier insert
-// made it (review_status='pending') either way, so this never claims a
-// verdict that wasn't actually reached.
-async function submitForAiReview(foodId, productType, base64, mediaType, submitted){
+// no admin queue in normal operation. `photos` is the same array of
+// {base64, mediaType} the scan was analyzed from (see createPhotoStager
+// below) -- a scan can now be built from several photos of one product,
+// and the reviewer is shown the same full set it's judging against.
+// Returns {verdict, reason} on success, or {verdict:'error', message} if
+// the review call itself couldn't be completed -- the row is left
+// exactly as the earlier insert made it (review_status='pending') either
+// way, so this never claims a verdict that wasn't actually reached.
+async function submitForAiReview(foodId, productType, photos, submitted){
   try{
     const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ kind: 'review-submission', foodId, productType, imageBase64: base64, mediaType, submitted }),
+      body: JSON.stringify({
+        kind: 'review-submission', foodId, productType, submitted,
+        images: photos.map(p => ({ imageBase64: p.base64, mediaType: p.mediaType })),
+      }),
     });
     const data = await res.json();
     if(!res.ok) return { verdict: 'error', message: data.error || 'Review request failed' };
@@ -3296,6 +3304,57 @@ async function submitForAiReview(foodId, productType, base64, mediaType, submitt
   } catch(e){
     return { verdict: 'error', message: e.message };
   }
+}
+
+// Shared mechanism (not flow logic) for both scan types: stages however
+// many photos the person adds of the same product -- front, back,
+// different angles -- before a single "Analyze" call is sent, matching
+// how real labels actually get captured (see Aravinth's own example
+// photos: several angles per product). Renders a thumbnail strip with a
+// remove (x) on each photo, "+ Add another photo", "Analyze N photo(s)",
+// and "Cancel". The caller wires three callbacks: onAdd (opens that
+// scan's file input), onAnalyze(photos) (fires when "Analyze" is
+// tapped), and onCancel() (fires on Cancel or when the last photo is
+// removed) -- all genuinely shared mechanism, no scan-specific business
+// logic, unlike the rest of each flow which stays deliberately
+// duplicated between the two scan types per this project's convention.
+function createPhotoStager(containerId, { onAdd, onAnalyze, onCancel, maxPhotos }){
+  const container = document.getElementById(containerId);
+  let photos = [];
+  function render(){
+    if(!photos.length){ container.style.display = 'none'; container.innerHTML = ''; return; }
+    container.style.display = 'block';
+    const atMax = photos.length >= maxPhotos;
+    container.innerHTML = `
+      <div style="display:flex; gap:8px; flex-wrap:wrap; margin:8px 0;">
+        ${photos.map((p,i)=>`
+          <div style="position:relative;">
+            <img src="data:${p.mediaType};base64,${p.base64}" style="width:60px; height:60px; object-fit:cover; border-radius:6px; border:1px solid var(--line);">
+            <button type="button" data-idx="${i}" class="stager-remove" title="Remove this photo" style="position:absolute; top:-7px; right:-7px; width:20px; height:20px; border-radius:50%; border:none; background:var(--rust); color:#fff; font-size:12px; line-height:20px; padding:0; cursor:pointer;">×</button>
+          </div>`).join('')}
+      </div>
+      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        ${atMax ? `<span style="font-size:12px; color:var(--ink-faint);">Up to ${maxPhotos} photos per scan</span>` : `<button type="button" class="btn ghost small stager-add">+ Add another photo</button>`}
+        <button type="button" class="btn small stager-analyze">Analyze ${photos.length} photo${photos.length>1?'s':''}</button>
+        <button type="button" class="btn ghost small stager-cancel">Cancel</button>
+      </div>`;
+    container.querySelectorAll('.stager-remove').forEach(btn=>{
+      btn.onclick = ()=>{
+        photos.splice(+btn.dataset.idx, 1);
+        render();
+        if(!photos.length && onCancel) onCancel();
+      };
+    });
+    const addBtn = container.querySelector('.stager-add');
+    if(addBtn) addBtn.onclick = ()=> onAdd();
+    container.querySelector('.stager-analyze').onclick = ()=> onAnalyze(photos.slice());
+    container.querySelector('.stager-cancel').onclick = ()=>{ photos = []; render(); if(onCancel) onCancel(); };
+  }
+  return {
+    add: (base64, mediaType)=>{ photos.push({ base64, mediaType }); render(); },
+    reset: ()=>{ photos = []; render(); },
+    count: ()=> photos.length,
+  };
 }
 
 function renderPkNutrientGrid(extracted){
@@ -3309,36 +3368,65 @@ function renderPkNutrientGrid(extracted){
   }).join('');
 }
 
+const pkPhotoStager = createPhotoStager('pkPhotoStager', {
+  maxPhotos: 6,
+  onAdd: ()=> document.getElementById('packagedPhotoInput').click(),
+  onCancel: ()=>{
+    document.getElementById('scanPackagedBtn').style.display = '';
+    document.getElementById('packagedScanStatus').textContent = '';
+  },
+  onAnalyze: (photos)=> analyzePackagedPhotos(photos),
+});
+
 document.getElementById('scanPackagedBtn').onclick = ()=> document.getElementById('packagedPhotoInput').click();
 document.getElementById('packagedPhotoInput').onchange = async ()=>{
   const input = document.getElementById('packagedPhotoInput');
   if(!input.files.length) return;
   const file = input.files[0];
   const status = document.getElementById('packagedScanStatus');
-  status.style.color = 'var(--ink-faint)';
-  status.textContent = 'Reading the label…';
-  document.getElementById('packagedScanReview').style.display = 'none';
-
   try{
     // Higher resolution than the meal-photo flow (1024px) -- a nutrition
     // panel's text is small and needs to stay legible after downscaling.
     const base64 = await resizeImageToBase64(file, 1600);
-    const mediaType = 'image/jpeg';
+    pkPhotoStager.add(base64, 'image/jpeg');
+    document.getElementById('scanPackagedBtn').style.display = 'none';
+    status.style.color = 'var(--ink-faint)';
+    status.textContent = pkPhotoStager.count() > 1
+      ? 'Add more angles if needed, then tap Analyze.'
+      : 'Got it — add another photo (back of pack, a closer shot, etc.) if the label needs more than one angle, or tap Analyze.';
+  } catch(e){
+    console.error('Packaged food photo capture error:', e);
+    status.style.color = 'var(--rust)';
+    status.textContent = "Couldn't read that photo — try again.";
+  } finally {
+    input.value = '';
+  }
+};
+
+async function analyzePackagedPhotos(photos){
+  const status = document.getElementById('packagedScanStatus');
+  status.style.color = 'var(--ink-faint)';
+  status.textContent = 'Reading the label…';
+  document.getElementById('packagedScanReview').style.display = 'none';
+  const stagerButtons = document.querySelectorAll('#pkPhotoStager button');
+  stagerButtons.forEach(b => b.disabled = true);
+
+  try{
     const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ kind: 'packaged-food-scan', imageBase64: base64, mediaType }),
+      body: JSON.stringify({ kind: 'packaged-food-scan', images: photos.map(p => ({ imageBase64: p.base64, mediaType: p.mediaType })) }),
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Request failed');
 
     if(data.notAFoodLabel){
       status.style.color = 'var(--rust)';
-      status.textContent = "Couldn't find a nutrition label in that photo — try a clearer shot of the nutrition panel.";
+      status.textContent = "Couldn't find a nutrition label in " + (photos.length > 1 ? 'those photos' : 'that photo') + " — try a clearer shot of the nutrition panel, or add another angle below.";
       return;
     }
 
-    pkScan = { extracted: data, base64, mediaType };
+    pkScan = { extracted: data, photos };
     document.getElementById('pkProductName').value = data.productName || '';
     document.getElementById('pkBrand').value = data.brand || '';
     document.getElementById('pkServingSize').value = data.servingSizeText || '';
@@ -3364,18 +3452,21 @@ document.getElementById('packagedPhotoInput').onchange = async ()=>{
     document.getElementById('pkSaveStatus').textContent = '';
     status.style.color = 'var(--teal-deep)';
     status.textContent = 'Here\'s what was on the label — check it over, then save.';
+    pkPhotoStager.reset();
     document.getElementById('packagedScanReview').style.display = 'block';
   } catch(e){
     console.error('Packaged food scan error:', e);
     status.style.color = 'var(--rust)';
-    status.textContent = "Couldn't read that label — try again with a clearer, well-lit photo of the nutrition panel.";
+    status.textContent = "Couldn't read " + (photos.length > 1 ? 'those photos' : 'that photo') + " — try again, or add another angle below.";
   } finally {
-    input.value = '';
+    document.querySelectorAll('#pkPhotoStager button').forEach(b => b.disabled = false);
   }
-};
+}
 
 document.getElementById('pkCancelBtn').onclick = ()=>{
   pkScan = null;
+  pkPhotoStager.reset();
+  document.getElementById('scanPackagedBtn').style.display = '';
   document.getElementById('packagedScanReview').style.display = 'none';
   document.getElementById('packagedScanStatus').textContent = '';
 };
@@ -3401,21 +3492,29 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
   });
 
   statusEl.style.color = 'var(--ink-faint)';
-  statusEl.textContent = 'Saving — uploading the label photo…';
+  statusEl.textContent = pkScan.photos.length > 1 ? `Saving — uploading ${pkScan.photos.length} label photos…` : 'Saving — uploading the label photo…';
 
-  let photoStoragePath = null;
-  try{
-    const blob = base64ToBlob(pkScan.base64, pkScan.mediaType);
-    photoStoragePath = `${currentUser.id}/packaged-foods/${Date.now()}-label.jpg`;
-    const { error: uploadErr } = await db.storage.from('medical-documents').upload(photoStoragePath, blob, { upsert: false, contentType: pkScan.mediaType });
-    if(uploadErr){
-      console.error('Label photo upload failed:', uploadErr.message);
-      photoStoragePath = null; // not fatal -- the extracted values below still get saved
+  // Upload every staged photo, not just one -- photo_storage_path (the
+  // first photo) is kept for anything that only ever reads the single
+  // original column; photo_storage_paths (plural) is the full set.
+  const photoStoragePaths = [];
+  for (let i = 0; i < pkScan.photos.length; i++){
+    const p = pkScan.photos[i];
+    try{
+      const blob = base64ToBlob(p.base64, p.mediaType);
+      const path = `${currentUser.id}/packaged-foods/${Date.now()}-label-${i}.jpg`;
+      const { error: uploadErr } = await db.storage.from('medical-documents').upload(path, blob, { upsert: false, contentType: p.mediaType });
+      if(uploadErr){
+        console.error('Label photo upload failed:', uploadErr.message);
+      } else {
+        photoStoragePaths.push(path);
+      }
+    } catch(e){
+      console.error('Label photo upload failed:', e.message);
     }
-  } catch(e){
-    console.error('Label photo upload failed:', e.message);
-    photoStoragePath = null;
   }
+  // Not fatal if some/all uploads failed -- the extracted values below
+  // still get saved either way.
 
   statusEl.textContent = 'Saving…';
   const keywordTokens = Array.from(new Set(
@@ -3428,7 +3527,8 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
     serving_size_text: servingSizeText,
     ingredients_text: pkScan.extracted.ingredientsText || null,
     unquantified_additives: pkScan.extracted.unquantifiedAdditives || [],
-    photo_storage_path: photoStoragePath,
+    photo_storage_path: photoStoragePaths[0] || null,
+    photo_storage_paths: photoStoragePaths.length ? photoStoragePaths : null,
     owner_user_id: currentUser.id,
     review_status: 'pending',
     source: 'packaged_scan',
@@ -3438,7 +3538,7 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
   if(insertErr){
     statusEl.style.color = 'var(--rust)';
     statusEl.textContent = "Couldn't save: " + insertErr.message;
-    if(photoStoragePath) await db.storage.from('medical-documents').remove([photoStoragePath]);
+    if(photoStoragePaths.length) await db.storage.from('medical-documents').remove(photoStoragePaths);
     return;
   }
 
@@ -3463,7 +3563,7 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
   submittedForReview.ingredientsText = scanForReview.extracted.ingredientsText || null;
   submittedForReview.unquantifiedAdditives = scanForReview.extracted.unquantifiedAdditives || [];
 
-  const verdict = await submitForAiReview(inserted.id, 'packaged', scanForReview.base64, scanForReview.mediaType, submittedForReview);
+  const verdict = await submitForAiReview(inserted.id, 'packaged', scanForReview.photos, submittedForReview);
   const statusEl2 = document.getElementById('packagedScanStatus');
   if(verdict.verdict === 'approved'){
     statusEl2.style.color = 'var(--teal-deep)';
@@ -3499,7 +3599,7 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
 // field (`label_notes` on `foods`) that the person can review and edit
 // before saving, same confirm-before-save principle as everything else.
 
-let supScan = null; // { extracted, base64, mediaType } for the in-progress scan
+let supScan = null; // { extracted, photos: [{base64, mediaType}, ...] } for the in-progress scan
 
 function renderSupNutrientGrid(extracted){
   const grid = document.getElementById('supNutrientGrid');
@@ -3512,38 +3612,67 @@ function renderSupNutrientGrid(extracted){
   }).join('');
 }
 
+const supPhotoStager = createPhotoStager('supPhotoStager', {
+  maxPhotos: 6,
+  onAdd: ()=> document.getElementById('supplementPhotoInput').click(),
+  onCancel: ()=>{
+    document.getElementById('scanSupplementBtn').style.display = '';
+    document.getElementById('supplementScanStatus').textContent = '';
+  },
+  onAnalyze: (photos)=> analyzeSupplementPhotos(photos),
+});
+
 document.getElementById('scanSupplementBtn').onclick = ()=> document.getElementById('supplementPhotoInput').click();
 document.getElementById('supplementPhotoInput').onchange = async ()=>{
   const input = document.getElementById('supplementPhotoInput');
   if(!input.files.length) return;
   const file = input.files[0];
   const status = document.getElementById('supplementScanStatus');
-  status.style.color = 'var(--ink-faint)';
-  status.textContent = 'Reading the label…';
-  document.getElementById('supplementScanReview').style.display = 'none';
-
   try{
     // Same higher resolution as packaged-food-scan -- supplement nutrition
     // panels are often even denser/smaller text (full micronutrient +
     // amino-acid tables on a curved pouch), so legibility matters just as
     // much here.
     const base64 = await resizeImageToBase64(file, 1600);
-    const mediaType = 'image/jpeg';
+    supPhotoStager.add(base64, 'image/jpeg');
+    document.getElementById('scanSupplementBtn').style.display = 'none';
+    status.style.color = 'var(--ink-faint)';
+    status.textContent = supPhotoStager.count() > 1
+      ? 'Add more angles if needed, then tap Analyze.'
+      : 'Got it — add another photo (back of pack, a closer shot, etc.) if the label needs more than one angle, or tap Analyze.';
+  } catch(e){
+    console.error('Supplement photo capture error:', e);
+    status.style.color = 'var(--rust)';
+    status.textContent = "Couldn't read that photo — try again.";
+  } finally {
+    input.value = '';
+  }
+};
+
+async function analyzeSupplementPhotos(photos){
+  const status = document.getElementById('supplementScanStatus');
+  status.style.color = 'var(--ink-faint)';
+  status.textContent = 'Reading the label…';
+  document.getElementById('supplementScanReview').style.display = 'none';
+  const stagerButtons = document.querySelectorAll('#supPhotoStager button');
+  stagerButtons.forEach(b => b.disabled = true);
+
+  try{
     const res = await fetch('/api/ai-helpers', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ kind: 'supplement-scan', imageBase64: base64, mediaType }),
+      body: JSON.stringify({ kind: 'supplement-scan', images: photos.map(p => ({ imageBase64: p.base64, mediaType: p.mediaType })) }),
     });
     const data = await res.json();
     if(!res.ok) throw new Error(data.error || 'Request failed');
 
     if(data.notASupplementLabel){
       status.style.color = 'var(--rust)';
-      status.textContent = "Couldn't find a supplement label in that photo — try a clearer shot of the nutrition panel.";
+      status.textContent = "Couldn't find a supplement label in " + (photos.length > 1 ? 'those photos' : 'that photo') + " — try a clearer shot of the nutrition panel, or add another angle below.";
       return;
     }
 
-    supScan = { extracted: data, base64, mediaType };
+    supScan = { extracted: data, photos };
     document.getElementById('supProductName').value = data.productName || '';
     document.getElementById('supBrand').value = data.brand || '';
     document.getElementById('supServingSize').value = data.servingSizeText || '';
@@ -3570,18 +3699,21 @@ document.getElementById('supplementPhotoInput').onchange = async ()=>{
     document.getElementById('supSaveStatus').textContent = '';
     status.style.color = 'var(--teal-deep)';
     status.textContent = 'Here\'s what was on the label — check it over, then save.';
+    supPhotoStager.reset();
     document.getElementById('supplementScanReview').style.display = 'block';
   } catch(e){
     console.error('Supplement scan error:', e);
     status.style.color = 'var(--rust)';
-    status.textContent = "Couldn't read that label — try again with a clearer, well-lit photo of the nutrition panel.";
+    status.textContent = "Couldn't read " + (photos.length > 1 ? 'those photos' : 'that photo') + " — try again, or add another angle below.";
   } finally {
-    input.value = '';
+    document.querySelectorAll('#supPhotoStager button').forEach(b => b.disabled = false);
   }
-};
+}
 
 document.getElementById('supCancelBtn').onclick = ()=>{
   supScan = null;
+  supPhotoStager.reset();
+  document.getElementById('scanSupplementBtn').style.display = '';
   document.getElementById('supplementScanReview').style.display = 'none';
   document.getElementById('supplementScanStatus').textContent = '';
 };
@@ -3608,20 +3740,25 @@ document.getElementById('supSaveBtn').onclick = async ()=>{
   });
 
   statusEl.style.color = 'var(--ink-faint)';
-  statusEl.textContent = 'Saving — uploading the label photo…';
+  statusEl.textContent = supScan.photos.length > 1 ? `Saving — uploading ${supScan.photos.length} label photos…` : 'Saving — uploading the label photo…';
 
-  let photoStoragePath = null;
-  try{
-    const blob = base64ToBlob(supScan.base64, supScan.mediaType);
-    photoStoragePath = `${currentUser.id}/supplements/${Date.now()}-label.jpg`;
-    const { error: uploadErr } = await db.storage.from('medical-documents').upload(photoStoragePath, blob, { upsert: false, contentType: supScan.mediaType });
-    if(uploadErr){
-      console.error('Label photo upload failed:', uploadErr.message);
-      photoStoragePath = null; // not fatal -- the extracted values below still get saved
+  // Upload every staged photo, not just one -- same reasoning as the
+  // packaged-food save handler above.
+  const photoStoragePaths = [];
+  for (let i = 0; i < supScan.photos.length; i++){
+    const p = supScan.photos[i];
+    try{
+      const blob = base64ToBlob(p.base64, p.mediaType);
+      const path = `${currentUser.id}/supplements/${Date.now()}-label-${i}.jpg`;
+      const { error: uploadErr } = await db.storage.from('medical-documents').upload(path, blob, { upsert: false, contentType: p.mediaType });
+      if(uploadErr){
+        console.error('Label photo upload failed:', uploadErr.message);
+      } else {
+        photoStoragePaths.push(path);
+      }
+    } catch(e){
+      console.error('Label photo upload failed:', e.message);
     }
-  } catch(e){
-    console.error('Label photo upload failed:', e.message);
-    photoStoragePath = null;
   }
 
   statusEl.textContent = 'Saving…';
@@ -3635,7 +3772,8 @@ document.getElementById('supSaveBtn').onclick = async ()=>{
     serving_size_text: servingSizeText,
     ingredients_text: supScan.extracted.ingredientsText || null,
     label_notes: labelNotes,
-    photo_storage_path: photoStoragePath,
+    photo_storage_path: photoStoragePaths[0] || null,
+    photo_storage_paths: photoStoragePaths.length ? photoStoragePaths : null,
     owner_user_id: currentUser.id,
     review_status: 'pending',
     source: 'supplement_scan',
@@ -3645,7 +3783,7 @@ document.getElementById('supSaveBtn').onclick = async ()=>{
   if(insertErr){
     statusEl.style.color = 'var(--rust)';
     statusEl.textContent = "Couldn't save: " + insertErr.message;
-    if(photoStoragePath) await db.storage.from('medical-documents').remove([photoStoragePath]);
+    if(photoStoragePaths.length) await db.storage.from('medical-documents').remove(photoStoragePaths);
     return;
   }
 
@@ -3670,7 +3808,7 @@ document.getElementById('supSaveBtn').onclick = async ()=>{
   submittedForReview.ingredientsText = scanForReview.extracted.ingredientsText || null;
   submittedForReview.labelNotes = labelNotes;
 
-  const verdict = await submitForAiReview(inserted.id, 'supplement', scanForReview.base64, scanForReview.mediaType, submittedForReview);
+  const verdict = await submitForAiReview(inserted.id, 'supplement', scanForReview.photos, submittedForReview);
   const statusEl2 = document.getElementById('supplementScanStatus');
   if(verdict.verdict === 'approved'){
     statusEl2.style.color = 'var(--teal-deep)';
