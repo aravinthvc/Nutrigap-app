@@ -4,17 +4,24 @@
 // file to stay under Vercel's 12-serverless-function cap on the Hobby
 // plan: explaining an unfamiliar lab marker, suggesting recipe ideas
 // from a short food list, describing what's on a meal photo, reading the
-// nutrition panel off a packaged-food photo, and (new) reading a dietary
-// supplement's label. All were already simple, single-call-to-Claude POST
-// handlers with no shared state and no external callers (unlike the
+// nutrition panel off a packaged-food photo, reading a dietary
+// supplement's label, and (new) reviewing a submitted scan for promotion
+// into the shared catalog. All were already simple, single-call-to-Claude
+// POST handlers with no shared state and no external callers (unlike the
 // Telegram/OAuth endpoints, which stay as their own files) — good merge
-// candidates. Routed by `kind` in the POST body: 'explain-marker' |
-// 'recipe-ideas' | 'photo-log' | 'packaged-food-scan' | 'supplement-scan'.
+// candidates, EXCEPT review-submission, which -- uniquely among the kinds
+// in this file -- also needs direct (service-role) database access to act
+// on its own verdict; see that section below for why that's safe. Routed
+// by `kind` in the POST body: 'explain-marker' | 'recipe-ideas' |
+// 'photo-log' | 'packaged-food-scan' | 'supplement-scan' |
+// 'review-submission'.
 //
 // The first three are unchanged from the original separate files -- see
 // api/explain-marker.js, api/recipe-ideas.js, and api/photo-log.js in git
-// history for the pre-merge originals. packaged-food-scan and
-// supplement-scan are new.
+// history for the pre-merge originals. packaged-food-scan,
+// supplement-scan, and review-submission are new.
+
+const db = require('../lib/supabase-rest');
 
 async function callClaude(apiKey, { system, maxTokens, messages }){
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -370,6 +377,148 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
   }
 }
 
+// ---------- review-submission (new) ----------
+//
+// Replaces Aravinth manually running an approval query for every packaged-
+// food/supplement scan with an automated check, per his explicit choice:
+// auto-approve a clean submission into the shared catalog immediately, and
+// immediately reject a doubtful one with a specific reason so the person
+// can fix it and rescan -- no queue, no waiting on a human either way.
+//
+// This is a VERIFICATION pass, not a second extraction: it's shown the
+// same photo again, told what the person actually saved (which may have
+// been hand-edited in the review panel after the original scan), and
+// asked whether that saved data is actually supported by what's printed.
+// This is the one real gap a first extraction pass can't close on its
+// own -- the confirm-before-save screen lets someone fix a misread value,
+// but nothing previously caught someone fixing it to the WRONG value, by
+// mistake or otherwise. Re-checking against the photo, fresh, after
+// saving, closes that gap without adding a second human reviewer.
+//
+// This only ever makes a binary call -- approve or reject -- never a
+// third "still pending" outcome from a successful review, matching the
+// scope Aravinth chose. If the Claude call itself fails for an
+// infrastructure reason (not a data-quality judgment), the row is left
+// exactly as it was (`review_status` untouched) rather than guessing --
+// see the catch block below. That also means `review_status: 'pending'`
+// still exists as a safety-net state, reachable only when review itself
+// couldn't run, and still visible to a manual admin check if one is ever
+// needed, same query as before this feature existed.
+//
+// Security note: this is the ONLY kind in this file that touches the
+// database, and on purpose -- the `foods` table's INSERT policy (see
+// add_packaged_food_scanning.sql) only ever lets the browser insert a row
+// owned by itself with review_status='pending'; there is deliberately NO
+// update policy for the `authenticated` role at all, so the browser
+// itself cannot flip a row to 'approved' (which also clears
+// owner_user_id, promoting it into everyone's shared catalog) or even to
+// 'rejected'. Only this endpoint can, because only it holds the
+// service-role key (via lib/supabase-rest.js, same pattern
+// api/telegram-webhook.js already uses) -- so a submission reaching the
+// shared catalog always required an actual Claude verdict against the
+// actual stored photo, never a client-asserted "trust me".
+
+async function handleReviewSubmission(req, res, apiKey){
+  const { foodId, productType, imageBase64, mediaType, submitted } = req.body || {};
+  if (!foodId || !imageBase64 || !submitted || typeof submitted !== 'object') {
+    res.status(400).json({ error: 'Missing required field(s): foodId, imageBase64, submitted.' });
+    return;
+  }
+  const isSupplement = productType === 'supplement';
+
+  const submittedSummary = JSON.stringify({
+    productName: submitted.name || null,
+    brand: submitted.brand || null,
+    servingSizeText: submitted.servingSizeText || null,
+    kcal: submitted.kcal, protein: submitted.protein, carbs: submitted.carbs, fat: submitted.fat, fiber: submitted.fiber,
+    sodium: submitted.sodium, iron: submitted.iron, calcium: submitted.calcium, vitD: submitted.vitD, vitB12: submitted.vitB12,
+    vitC: submitted.vitC, vitA: submitted.vitA, vitE: submitted.vitE, vitK: submitted.vitK, folate: submitted.folate,
+    vitB6: submitted.vitB6, magnesium: submitted.magnesium, zinc: submitted.zinc, potassium: submitted.potassium, selenium: submitted.selenium,
+    ingredientsText: submitted.ingredientsText || null,
+    otherNotes: isSupplement ? (submitted.labelNotes || null) : (submitted.unquantifiedAdditives || []),
+  }, null, 2);
+
+  const systemPrompt = `You are a quality-control reviewer embedded in a health app called NutriGap. A user photographed a ${isSupplement ? "dietary supplement's" : "packaged food's"} label, an earlier AI pass extracted its nutrition facts, and the user then reviewed and could freely edit every value before saving. Your job is to check, against the SAME photo, whether what they actually saved is genuinely supported by what's printed -- catching either a bad original read or a bad manual edit, since both look identical by the time you see them.
+
+You will be shown the photo again and told exactly what was saved. Decide "approved" or "rejected" -- there is no third option. When genuinely unsure, choose "rejected": a doubtful submission should never silently join the shared catalog everyone else sees, and rejecting is cheap -- the person just rescans.
+
+Reject when:
+- Any saved numeric value clearly disagrees with what's printed -- a materially different number, a misplaced decimal point, or a different unit than what the label actually shows. Minor differences consistent with ordinary rounding are fine; a value that's off by a large margin, or present when the label shows nothing for it, is not.
+- The saved serving size doesn't match what's printed.
+- The product name or brand looks like spam, gibberish, a placeholder ("test", "asdf"), offensive, or clearly doesn't match the product actually shown in the photo.
+${isSupplement ? '- Any saved numeric field looks like it could be a %RDA/%DV percentage rather than an absolute amount (e.g. a suspiciously round number like 50, 66, 100 sitting where a specific milligram amount should be, with no matching printed amount) -- this app never stores that percentage.' : '- The saved calories are wildly inconsistent with the saved protein/carb/fat grams (roughly: kcal should be in the neighborhood of 4×protein + 4×carbs + 9×fat; only flag a real, large mismatch, and only when protein, carbs, and fat are all present -- don\'t penalize a null/missing field, and allow generous slack for fiber, sugar alcohols, and rounding).'}
+- The photo doesn't actually show a legible ${isSupplement ? 'supplement' : 'food'} label at all.
+
+Do NOT reject just because a field is null/missing -- an honest gap is correct behavior, never a reason to reject. Do NOT reject over a stylistic or formatting difference that doesn't change the actual facts.
+
+If you reject, "reason" must be one short, specific, actionable sentence naming exactly what's wrong (e.g. "The label shows Vitamin C as 40 mg but 400 mg was saved" or "Calories (450) don't reconcile with the saved protein/carb/fat"), so the person knows exactly what to fix before rescanning. If you approve, "reason" should be null.
+
+Respond with ONLY a JSON object -- no markdown, no code fences, no commentary -- in exactly this shape:
+{"verdict": "approved", "reason": null}
+or
+{"verdict": "rejected", "reason": "..."}
+
+Here is what was saved, to check against the photo:
+${submittedSummary}`;
+
+  let parsed;
+  try {
+    const rawText = await callClaude(apiKey, {
+      system: systemPrompt, maxTokens: 500,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageBase64 } },
+          { type: 'text', text: 'Check the saved data above against this photo, following your instructions exactly.' },
+        ],
+      }],
+    });
+    const cleaned = extractJson(rawText);
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      // Couldn't parse a verdict -- this is an infrastructure/format
+      // failure, not a quality judgment, so leave review_status alone
+      // (still 'pending') rather than guessing either way.
+      res.status(502).json({ error: 'Could not parse the AI review response as JSON.', rawPreview: cleaned.slice(0, 300) });
+      return;
+    }
+  } catch (e) {
+    if (e.isClaudeError) { res.status(502).json({ error: e.message }); return; }
+    res.status(500).json({ error: e.message });
+    return;
+  }
+
+  const approved = parsed.verdict === 'approved';
+  const reason = (!approved && typeof parsed.reason === 'string' && parsed.reason.trim()) ? parsed.reason.trim() : null;
+
+  try {
+    if (approved) {
+      await db.update('foods', ['id=eq.' + encodeURIComponent(foodId), 'review_status=eq.pending'], {
+        owner_user_id: null,
+        review_status: 'approved',
+        review_notes: reason, // null on approval, per the prompt above
+        reviewed_at: new Date().toISOString(),
+      });
+    } else {
+      await db.update('foods', ['id=eq.' + encodeURIComponent(foodId), 'review_status=eq.pending'], {
+        review_status: 'rejected',
+        review_notes: reason,
+        reviewed_at: new Date().toISOString(),
+      });
+    }
+  } catch (e) {
+    // The verdict was reached but couldn't be written -- report this as
+    // its own distinct failure rather than claiming the verdict applied
+    // when it didn't; the row stays 'pending' in the database either way,
+    // so nothing was silently approved or silently rejected.
+    res.status(502).json({ error: 'Reached a verdict but could not save it: ' + e.message, verdict: parsed.verdict, reason });
+    return;
+  }
+
+  res.status(200).json({ verdict: approved ? 'approved' : 'rejected', reason });
+}
+
 // ---------- dispatch ----------
 
 module.exports = async function handler(req, res) {
@@ -390,5 +539,6 @@ module.exports = async function handler(req, res) {
   if (kind === 'photo-log') return handlePhotoLog(req, res, apiKey);
   if (kind === 'packaged-food-scan') return handlePackagedFoodScan(req, res, apiKey);
   if (kind === 'supplement-scan') return handleSupplementScan(req, res, apiKey);
-  res.status(400).json({ error: 'Missing or invalid kind (expected "explain-marker", "recipe-ideas", "photo-log", "packaged-food-scan", or "supplement-scan").' });
+  if (kind === 'review-submission') return handleReviewSubmission(req, res, apiKey);
+  res.status(400).json({ error: 'Missing or invalid kind (expected "explain-marker", "recipe-ideas", "photo-log", "packaged-food-scan", "supplement-scan", or "review-submission").' });
 };
