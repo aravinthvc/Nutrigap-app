@@ -3272,6 +3272,32 @@ function base64ToBlob(base64, mediaType){
   return new Blob([arr], { type: mediaType });
 }
 
+// Shared mechanism (not flow logic) for both "scan a packaged food" and
+// "scan a supplement": right after either save handler inserts its row,
+// this immediately asks api/ai-helpers.js's 'review-submission' kind to
+// check the saved values against the same photo and act on its own
+// verdict (see add_ai_review.sql) -- approved rows join the shared
+// catalog right away, rejected ones stay private with a specific reason,
+// no admin queue in normal operation. Returns {verdict, reason} on
+// success, or {verdict:'error', message} if the review call itself
+// couldn't be completed -- the row is left exactly as the earlier insert
+// made it (review_status='pending') either way, so this never claims a
+// verdict that wasn't actually reached.
+async function submitForAiReview(foodId, productType, base64, mediaType, submitted){
+  try{
+    const res = await fetch('/api/ai-helpers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ kind: 'review-submission', foodId, productType, imageBase64: base64, mediaType, submitted }),
+    });
+    const data = await res.json();
+    if(!res.ok) return { verdict: 'error', message: data.error || 'Review request failed' };
+    return { verdict: data.verdict, reason: data.reason || null };
+  } catch(e){
+    return { verdict: 'error', message: e.message };
+  }
+}
+
 function renderPkNutrientGrid(extracted){
   const grid = document.getElementById('pkNutrientGrid');
   grid.innerHTML = PACKAGED_NUTRIENT_FIELDS.map(f => {
@@ -3424,12 +3450,31 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
   await loadFoods();
   await refreshDietLog();
 
+  const scanForReview = pkScan;
   pkScan = null;
   document.getElementById('packagedScanReview').style.display = 'none';
   document.getElementById('packagedScanStatus').style.color = 'var(--teal-deep)';
   document.getElementById('packagedScanStatus').textContent = logErr
     ? 'Saved to your personal food list, but logging it today failed — find it in the food search above and add it manually.'
-    : "Saved and logged — it's yours to use any time now without rescanning. Aravinth's team reviews new scans before they join the shared catalog for everyone.";
+    : "Saved and logged — checking it against the label now…";
+
+  const submittedForReview = { name, brand, servingSizeText };
+  PACKAGED_NUTRIENT_FIELDS.forEach(f => { submittedForReview[f.key] = nutrientPatch[f.column]; });
+  submittedForReview.ingredientsText = scanForReview.extracted.ingredientsText || null;
+  submittedForReview.unquantifiedAdditives = scanForReview.extracted.unquantifiedAdditives || [];
+
+  const verdict = await submitForAiReview(inserted.id, 'packaged', scanForReview.base64, scanForReview.mediaType, submittedForReview);
+  const statusEl2 = document.getElementById('packagedScanStatus');
+  if(verdict.verdict === 'approved'){
+    statusEl2.style.color = 'var(--teal-deep)';
+    statusEl2.textContent = "Saved and logged — checked against the label and added to the shared catalog for everyone.";
+  } else if(verdict.verdict === 'rejected'){
+    statusEl2.style.color = 'var(--rust)';
+    statusEl2.textContent = `Kept in your personal food list only — it didn't match the label (${verdict.reason}). It's still logged for today; rescan with corrected values to add it to the shared catalog.`;
+  } else {
+    statusEl2.style.color = 'var(--ink-faint)';
+    statusEl2.textContent = "Saved to your personal food list and logged for today. Couldn't automatically verify it against the label just now — it'll stay personal-only until that check succeeds; no action needed from you.";
+  }
 };
 
 // ---------- "Scan a supplement" (photo-to-catalog, V1) ----------
@@ -3612,12 +3657,31 @@ document.getElementById('supSaveBtn').onclick = async ()=>{
   await loadFoods();
   await refreshDietLog();
 
+  const scanForReview = supScan;
   supScan = null;
   document.getElementById('supplementScanReview').style.display = 'none';
   document.getElementById('supplementScanStatus').style.color = 'var(--teal-deep)';
   document.getElementById('supplementScanStatus').textContent = logErr
     ? 'Saved to your personal food list, but logging it today failed — find it in the food search above and add it manually.'
-    : "Saved and logged — it's yours to use any time now without rescanning. Aravinth's team reviews new scans before they join the shared catalog for everyone.";
+    : "Saved and logged — checking it against the label now…";
+
+  const submittedForReview = { name, brand, servingSizeText };
+  PACKAGED_NUTRIENT_FIELDS.forEach(f => { submittedForReview[f.key] = nutrientPatch[f.column]; });
+  submittedForReview.ingredientsText = scanForReview.extracted.ingredientsText || null;
+  submittedForReview.labelNotes = labelNotes;
+
+  const verdict = await submitForAiReview(inserted.id, 'supplement', scanForReview.base64, scanForReview.mediaType, submittedForReview);
+  const statusEl2 = document.getElementById('supplementScanStatus');
+  if(verdict.verdict === 'approved'){
+    statusEl2.style.color = 'var(--teal-deep)';
+    statusEl2.textContent = "Saved and logged — checked against the label and added to the shared catalog for everyone.";
+  } else if(verdict.verdict === 'rejected'){
+    statusEl2.style.color = 'var(--rust)';
+    statusEl2.textContent = `Kept in your personal food list only — it didn't match the label (${verdict.reason}). It's still logged for today; rescan with corrected values to add it to the shared catalog.`;
+  } else {
+    statusEl2.style.color = 'var(--ink-faint)';
+    statusEl2.textContent = "Saved to your personal food list and logged for today. Couldn't automatically verify it against the label just now — it'll stay personal-only until that check succeeds; no action needed from you.";
+  }
 };
 
 function renderParseReview(){
