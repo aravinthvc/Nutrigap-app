@@ -3,16 +3,18 @@
 // Combines several small, website-only Claude helper endpoints into one
 // file to stay under Vercel's 12-serverless-function cap on the Hobby
 // plan: explaining an unfamiliar lab marker, suggesting recipe ideas
-// from a short food list, describing what's on a meal photo, and (new)
-// reading the nutrition panel off a packaged-food photo. All were already
-// simple, single-call-to-Claude POST handlers with no shared state and no
-// external callers (unlike the Telegram/OAuth endpoints, which stay as
-// their own files) — good merge candidates. Routed by `kind` in the POST
-// body: 'explain-marker' | 'recipe-ideas' | 'photo-log' | 'packaged-food-scan'.
+// from a short food list, describing what's on a meal photo, reading the
+// nutrition panel off a packaged-food photo, and (new) reading a dietary
+// supplement's label. All were already simple, single-call-to-Claude POST
+// handlers with no shared state and no external callers (unlike the
+// Telegram/OAuth endpoints, which stay as their own files) — good merge
+// candidates. Routed by `kind` in the POST body: 'explain-marker' |
+// 'recipe-ideas' | 'photo-log' | 'packaged-food-scan' | 'supplement-scan'.
 //
 // The first three are unchanged from the original separate files -- see
 // api/explain-marker.js, api/recipe-ideas.js, and api/photo-log.js in git
-// history for the pre-merge originals. packaged-food-scan is new.
+// history for the pre-merge originals. packaged-food-scan and
+// supplement-scan are new.
 
 async function callClaude(apiKey, { system, maxTokens, messages }){
   const response = await fetch('https://api.anthropic.com/v1/messages', {
@@ -270,6 +272,104 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
   }
 }
 
+// ---------- supplement-scan (new) ----------
+//
+// Same facts-only discipline as packaged-food-scan, applied to a dietary
+// supplement label (gummy, protein powder, capsule, etc.) instead of a
+// food package. Supplement labels taught us (from real examples Aravinth
+// shared) that they differ from food labels in ways that matter for
+// safety, not just cosmetics:
+//
+// 1. The printed %RDA column is near-useless and potentially misleading --
+//    it's calculated against whatever demographic the label happened to
+//    pick (seen so far: "Children 1-3 years", "Women's Sedentary Work"),
+//    never the actual person logging it. So this extraction NEVER asks
+//    for or stores a %RDA -- only the absolute per-serving amount, same
+//    units as packaged-food-scan. NutriGap's own gap engine is what turns
+//    that into a real percentage, against the real logged-in person.
+// 2. Supplement labels routinely carry real printed facts that don't fit
+//    a fixed nutrient-column schema: proprietary/compound ingredient
+//    blends with one combined weight for several named ingredients,
+//    probiotic counts in Billion CFU, enzyme blends, amino-acid subtotals
+//    (EAA/BCAA/NEAA groups with named-but-not-individually-quantified
+//    members), and bioactives with a printed amount but no established
+//    RDA (Curcumin, Myo-Inositol, Algal DHA). None of those are numbers
+//    we can safely force into a fixed field -- splitting a blend's total
+//    weight across its named ingredients would be a guess wearing a
+//    number's clothes, exactly the thing this whole feature exists to
+//    avoid. So (per the "lean V1" scope) they all land in one free-text
+//    "labelNotes" field, copied close to verbatim, instead of fifteen new
+//    speculative structured fields.
+// 3. Usage/timing instructions are safety-relevant and label-specific --
+//    "eat 1 gummy daily", "consume within 15 minutes of mixing", "use
+//    within 5 weeks of opening", age restrictions, pregnancy/medical
+//    disclaimers -- also folded into labelNotes for V1 rather than their
+//    own fields, per the same lean-V1 choice.
+
+async function handleSupplementScan(req, res, apiKey){
+  const { imageBase64, mediaType } = req.body || {};
+  if (!imageBase64) {
+    res.status(400).json({ error: 'Missing required field: imageBase64.' });
+    return;
+  }
+
+  const systemPrompt = `You are a label-reading assistant embedded in a health app called NutriGap.
+You will be shown a photo of a dietary supplement's label (a gummy, protein powder, capsule, tablet, or similar -- not an ordinary packaged food). Your ONLY job is to extract what is explicitly printed -- nothing else.
+
+Rules you must follow without exception:
+- Extract only values that are explicitly printed on the label. Never infer, estimate, or guess a value that isn't printed -- if a field isn't stated anywhere on the label, set it to null. This applies to every nutrient, including vitamins and minerals.
+- NEVER extract or report a %RDA / %DV / %RDI percentage for anything -- only the absolute per-serving amount (e.g. "20 mg", not "66%"). Supplement labels calculate their %RDA against whatever population they chose (children, sedentary adult women, etc.), which is almost never the person actually using this app, so that percentage would be actively misleading if stored or shown. If a sentence on the label explains what population/activity level the %RDA is based on (e.g. "as per ICMR 2020 guidelines for Women's Sedentary Work"), copy that sentence into labelNotes for the record, but never use it to compute or report a percentage yourself.
+- "servingSizeText" is the serving size exactly as printed (e.g. "1 gummy (approx 3.4g)", "2 scoops (34g)", "1 capsule"). All the nutrient numbers you extract must be the values for that same stated serving -- if the label shows both a per-100g and a per-serving column, use the per-serving column.
+- Report every amount in these exact units, converting if the label uses a different one (standard conversions, e.g. IU -> mcg for vitamin A/D using the standard factor for that vitamin's form): kcal in kcal; protein/carbs/fat/fiber in grams (g); sodium/calcium/iron/magnesium/zinc/potassium/vitamin C/vitamin E/vitamin B6 in milligrams (mg); vitamin D/vitamin B12/vitamin A/vitamin K/folate/selenium in micrograms (mcg). If you can't convert a printed unit to the required one with confidence, leave that field null rather than guess at the conversion.
+- Many real supplement labels print nutrients that don't fit the fixed list above at all -- a full B-complex (B1/B2/B3/B5/B7), proprietary or compound ingredient blends with one combined weight for several named ingredients, probiotics in Billion CFU, enzyme blends, amino-acid subtotals (EAA/BCAA/NEAA groups), or bioactives with a printed amount but no established RDA (Curcumin, Myo-Inositol, Algal DHA, etc.). Do not force any of these into the fixed numeric fields and do not try to split a combined/blend weight across its named ingredients -- that would be a guess, not a fact. Instead, write each one as a short line in "labelNotes", exactly as printed (name and amount/unit), e.g. "Curcumin 95% - 5 mg (no RDA established)" or "Proprietary blend 100mg: Pomegranate, Apple, Beetroot, Spinach, Carrot".
+- Also capture in "labelNotes", each as its own short line, anything else safety- or usage-relevant that's printed: dosing/usage instructions (e.g. "Eat 1 gummy daily"), any freshness or timing window (e.g. "consume within 15 minutes of mixing", "use within 5 weeks of opening"), age restrictions, and pregnancy/medical-condition disclaimers. Do not editorialize or add advice of your own -- copy what's printed, close to verbatim.
+- "productName" and "brand" should be read from the packaging if visible in the photo; set either to null if not visible (the person will be asked to confirm or fill these in regardless).
+- "ingredientsText" is the ingredients list exactly as printed, if visible; otherwise null.
+- If the photo doesn't show a dietary supplement's label at all, set "notASupplementLabel" to true and leave every other field null/empty.
+
+Respond with ONLY a JSON object -- no markdown, no code fences, no commentary -- in exactly this shape:
+{"notASupplementLabel": false, "productName": "... or null", "brand": "... or null", "servingSizeText": "... or null", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0, "fiber": null, "sodium": null, "iron": null, "calcium": null, "vitD": null, "vitB12": null, "vitC": null, "vitA": null, "vitE": null, "vitK": null, "folate": null, "vitB6": null, "magnesium": null, "zinc": null, "potassium": null, "selenium": null, "ingredientsText": "... or null", "labelNotes": "... or null"}`;
+
+  try {
+    const rawText = await callClaude(apiKey, {
+      system: systemPrompt, maxTokens: 1800,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageBase64 } },
+          { type: 'text', text: "Extract this supplement label's information, following your instructions exactly." },
+        ],
+      }],
+    });
+    const cleaned = extractJson(rawText);
+    let parsed;
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (e) {
+      res.status(502).json({ error: 'Could not parse the AI response as JSON.', rawPreview: cleaned.slice(0, 300) });
+      return;
+    }
+
+    // Same cheap insurance as packaged-food-scan: coerce anything that
+    // isn't a finite number to null rather than passing it through.
+    const NUMERIC_FIELDS = ['kcal', 'protein', 'carbs', 'fat', 'fiber', 'sodium',
+      'iron', 'calcium', 'vitD', 'vitB12', 'vitC', 'vitA', 'vitE', 'vitK', 'folate', 'vitB6',
+      'magnesium', 'zinc', 'potassium', 'selenium'];
+    NUMERIC_FIELDS.forEach(f => {
+      parsed[f] = Number.isFinite(parsed[f]) ? parsed[f] : null;
+    });
+    parsed.labelNotes = (typeof parsed.labelNotes === 'string' && parsed.labelNotes.trim())
+      ? parsed.labelNotes.trim()
+      : null;
+    parsed.notASupplementLabel = !!parsed.notASupplementLabel;
+
+    res.status(200).json(parsed);
+  } catch (e) {
+    if (e.isClaudeError) { res.status(502).json({ error: e.message }); return; }
+    res.status(500).json({ error: e.message });
+  }
+}
+
 // ---------- dispatch ----------
 
 module.exports = async function handler(req, res) {
@@ -289,5 +389,6 @@ module.exports = async function handler(req, res) {
   if (kind === 'recipe-ideas') return handleRecipeIdeas(req, res, apiKey);
   if (kind === 'photo-log') return handlePhotoLog(req, res, apiKey);
   if (kind === 'packaged-food-scan') return handlePackagedFoodScan(req, res, apiKey);
-  res.status(400).json({ error: 'Missing or invalid kind (expected "explain-marker", "recipe-ideas", "photo-log", or "packaged-food-scan").' });
+  if (kind === 'supplement-scan') return handleSupplementScan(req, res, apiKey);
+  res.status(400).json({ error: 'Missing or invalid kind (expected "explain-marker", "recipe-ideas", "photo-log", "packaged-food-scan", or "supplement-scan").' });
 };
