@@ -1109,6 +1109,46 @@
                 <div id="pkSaveStatus" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>
               </div>
             </div>
+
+            <div id="scanSupplementRow" style="margin-top:10px;">
+              <button class="btn ghost small" id="scanSupplementBtn" type="button">💊 Scan a supplement</button>
+              <input type="file" id="supplementPhotoInput" accept="image/*" capture="environment" style="display:none;">
+              <div id="supplementScanStatus" style="font-size:12.5px; color:var(--ink-faint); margin-top:6px; min-height:16px;"></div>
+
+              <div id="supplementScanReview" style="display:none; margin-top:12px; padding-top:12px; border-top:1px solid var(--line);">
+                <div class="note" style="margin-top:0;">Check every value below before saving — this is read straight off the label, and a blurry photo can misread a number. Anything blank wasn't printed on the label; only fill it in if you know it for certain, otherwise it's left out of your nutrient totals rather than guessed at. Supplement labels often print their own "%RDA" column — we never use that figure, since it's usually calculated for a different age group or activity level than you; your real percentage is worked out from the amounts below, against your own targets.</div>
+                <div class="field">
+                  <label for="supProductName">Product name</label>
+                  <input type="text" id="supProductName" placeholder="e.g. Biozyme Performance Whey">
+                </div>
+                <div class="field">
+                  <label for="supBrand">Brand</label>
+                  <input type="text" id="supBrand" placeholder="e.g. MuscleBlaze">
+                </div>
+                <div class="field">
+                  <label for="supServingSize">Serving size (as printed)</label>
+                  <input type="text" id="supServingSize" placeholder="e.g. 1 scoop (36g)">
+                </div>
+                <div id="supNutrientGrid" style="display:grid; grid-template-columns:repeat(auto-fill, minmax(150px,1fr)); gap:10px; margin:12px 0;"></div>
+                <div id="supLabelNotesWrap" style="display:none; margin-bottom:10px;">
+                  <label for="supLabelNotes" style="font-size:12.5px; color:var(--ink-soft); font-weight:500; display:block; margin-bottom:4px;">Other label details (as printed — blends, dosage, warnings, etc.)</label>
+                  <textarea id="supLabelNotes" rows="4" style="width:100%; font-family:inherit; font-size:13px; padding:8px 10px; border:1px solid var(--line); border-radius:var(--radius-s); resize:vertical;"></textarea>
+                </div>
+                <div id="supIngredientsWrap" style="display:none; margin-bottom:10px;">
+                  <label style="font-size:12.5px; color:var(--ink-soft); font-weight:500; display:block; margin-bottom:4px;">Ingredients (as printed)</label>
+                  <div id="supIngredientsText" class="note" style="margin-top:0;"></div>
+                </div>
+                <div style="display:flex; align-items:flex-end; gap:14px; flex-wrap:wrap;">
+                  <div class="field" style="margin-bottom:0;">
+                    <label for="supServings">Servings you had</label>
+                    <input type="number" id="supServings" value="1" min="0.25" step="0.25" style="width:90px;">
+                  </div>
+                  <button class="btn" id="supSaveBtn" type="button">Save &amp; log it</button>
+                  <button class="btn ghost" id="supCancelBtn" type="button">Cancel</button>
+                </div>
+                <div id="supSaveStatus" style="font-size:12.5px; margin-top:8px; min-height:16px;"></div>
+              </div>
+            </div>
           </div>
 
           <div class="card" style="margin-top:20px;">
@@ -3388,6 +3428,194 @@ document.getElementById('pkSaveBtn').onclick = async ()=>{
   document.getElementById('packagedScanReview').style.display = 'none';
   document.getElementById('packagedScanStatus').style.color = 'var(--teal-deep)';
   document.getElementById('packagedScanStatus').textContent = logErr
+    ? 'Saved to your personal food list, but logging it today failed — find it in the food search above and add it manually.'
+    : "Saved and logged — it's yours to use any time now without rescanning. Aravinth's team reviews new scans before they join the shared catalog for everyone.";
+};
+
+// ---------- "Scan a supplement" (photo-to-catalog, V1) ----------
+//
+// Same mechanics as "scan a packaged food" above (facts-only extraction
+// via api/ai-helpers.js, confirm-before-save, personal list + admin
+// review before joining the shared catalog) -- deliberately duplicated
+// rather than sharing code with the packaged-food handlers above, same
+// convention this project already uses elsewhere (see nutrigap-status.md)
+// of keeping small, stable per-flow logic separate so a change to one
+// scan type can never accidentally break the other. PACKAGED_NUTRIENT_FIELDS
+// and base64ToBlob() are plain shared data/utilities, not flow logic, so
+// those are reused as-is.
+//
+// The one real difference from packaged foods: supplement labels print
+// their own %RDA, calculated against whatever population the label
+// picked (not the person using this app) -- so that percentage is never
+// extracted or stored at all (see api/ai-helpers.js's supplement-scan
+// prompt). Everything on the label that doesn't fit the fixed nutrient
+// grid -- ingredient blends, amino-acid subtotals, probiotics, dosage and
+// timing instructions, warnings -- lands in one free-text "label notes"
+// field (`label_notes` on `foods`) that the person can review and edit
+// before saving, same confirm-before-save principle as everything else.
+
+let supScan = null; // { extracted, base64, mediaType } for the in-progress scan
+
+function renderSupNutrientGrid(extracted){
+  const grid = document.getElementById('supNutrientGrid');
+  grid.innerHTML = PACKAGED_NUTRIENT_FIELDS.map(f => {
+    const val = extracted && Number.isFinite(extracted[f.key]) ? extracted[f.key] : '';
+    return `<div>
+      <label style="font-size:11.5px; color:var(--ink-soft); display:block; margin-bottom:2px;">${f.label} (${f.unit})</label>
+      <input type="number" step="any" class="sup-nutrient-input" data-key="${f.key}" value="${val}" placeholder="not printed">
+    </div>`;
+  }).join('');
+}
+
+document.getElementById('scanSupplementBtn').onclick = ()=> document.getElementById('supplementPhotoInput').click();
+document.getElementById('supplementPhotoInput').onchange = async ()=>{
+  const input = document.getElementById('supplementPhotoInput');
+  if(!input.files.length) return;
+  const file = input.files[0];
+  const status = document.getElementById('supplementScanStatus');
+  status.style.color = 'var(--ink-faint)';
+  status.textContent = 'Reading the label…';
+  document.getElementById('supplementScanReview').style.display = 'none';
+
+  try{
+    // Same higher resolution as packaged-food-scan -- supplement nutrition
+    // panels are often even denser/smaller text (full micronutrient +
+    // amino-acid tables on a curved pouch), so legibility matters just as
+    // much here.
+    const base64 = await resizeImageToBase64(file, 1600);
+    const mediaType = 'image/jpeg';
+    const res = await fetch('/api/ai-helpers', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ kind: 'supplement-scan', imageBase64: base64, mediaType }),
+    });
+    const data = await res.json();
+    if(!res.ok) throw new Error(data.error || 'Request failed');
+
+    if(data.notASupplementLabel){
+      status.style.color = 'var(--rust)';
+      status.textContent = "Couldn't find a supplement label in that photo — try a clearer shot of the nutrition panel.";
+      return;
+    }
+
+    supScan = { extracted: data, base64, mediaType };
+    document.getElementById('supProductName').value = data.productName || '';
+    document.getElementById('supBrand').value = data.brand || '';
+    document.getElementById('supServingSize').value = data.servingSizeText || '';
+    renderSupNutrientGrid(data);
+
+    const notesWrap = document.getElementById('supLabelNotesWrap');
+    if(data.labelNotes){
+      notesWrap.style.display = 'block';
+      document.getElementById('supLabelNotes').value = data.labelNotes;
+    } else {
+      notesWrap.style.display = 'none';
+      document.getElementById('supLabelNotes').value = '';
+    }
+
+    const ingWrap = document.getElementById('supIngredientsWrap');
+    if(data.ingredientsText){
+      ingWrap.style.display = 'block';
+      document.getElementById('supIngredientsText').textContent = data.ingredientsText;
+    } else {
+      ingWrap.style.display = 'none';
+    }
+
+    document.getElementById('supServings').value = 1;
+    document.getElementById('supSaveStatus').textContent = '';
+    status.style.color = 'var(--teal-deep)';
+    status.textContent = 'Here\'s what was on the label — check it over, then save.';
+    document.getElementById('supplementScanReview').style.display = 'block';
+  } catch(e){
+    console.error('Supplement scan error:', e);
+    status.style.color = 'var(--rust)';
+    status.textContent = "Couldn't read that label — try again with a clearer, well-lit photo of the nutrition panel.";
+  } finally {
+    input.value = '';
+  }
+};
+
+document.getElementById('supCancelBtn').onclick = ()=>{
+  supScan = null;
+  document.getElementById('supplementScanReview').style.display = 'none';
+  document.getElementById('supplementScanStatus').textContent = '';
+};
+
+document.getElementById('supSaveBtn').onclick = async ()=>{
+  if(!currentUser || !supScan) return;
+  const statusEl = document.getElementById('supSaveStatus');
+  const name = document.getElementById('supProductName').value.trim();
+  if(!name){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = 'Give it a product name before saving.';
+    return;
+  }
+  const brand = document.getElementById('supBrand').value.trim() || null;
+  const servingSizeText = document.getElementById('supServingSize').value.trim() || null;
+  const labelNotes = document.getElementById('supLabelNotes').value.trim() || null;
+  const servings = +document.getElementById('supServings').value || 1;
+
+  const nutrientPatch = {};
+  document.querySelectorAll('.sup-nutrient-input').forEach(inp=>{
+    const field = PACKAGED_NUTRIENT_FIELDS.find(f => f.key === inp.dataset.key);
+    const raw = inp.value.trim();
+    nutrientPatch[field.column] = raw === '' ? null : (+raw);
+  });
+
+  statusEl.style.color = 'var(--ink-faint)';
+  statusEl.textContent = 'Saving — uploading the label photo…';
+
+  let photoStoragePath = null;
+  try{
+    const blob = base64ToBlob(supScan.base64, supScan.mediaType);
+    photoStoragePath = `${currentUser.id}/supplements/${Date.now()}-label.jpg`;
+    const { error: uploadErr } = await db.storage.from('medical-documents').upload(photoStoragePath, blob, { upsert: false, contentType: supScan.mediaType });
+    if(uploadErr){
+      console.error('Label photo upload failed:', uploadErr.message);
+      photoStoragePath = null; // not fatal -- the extracted values below still get saved
+    }
+  } catch(e){
+    console.error('Label photo upload failed:', e.message);
+    photoStoragePath = null;
+  }
+
+  statusEl.textContent = 'Saving…';
+  const keywordTokens = Array.from(new Set(
+    (brand ? brand + ' ' : '').concat(name).toLowerCase().split(/\s+/).filter(Boolean)
+  ));
+
+  const { data: inserted, error: insertErr } = await db.from('foods').insert({
+    name, brand, keywords: keywordTokens,
+    ...nutrientPatch,
+    serving_size_text: servingSizeText,
+    ingredients_text: supScan.extracted.ingredientsText || null,
+    label_notes: labelNotes,
+    photo_storage_path: photoStoragePath,
+    owner_user_id: currentUser.id,
+    review_status: 'pending',
+    source: 'supplement_scan',
+    submitted_at: new Date().toISOString(),
+  }).select().single();
+
+  if(insertErr){
+    statusEl.style.color = 'var(--rust)';
+    statusEl.textContent = "Couldn't save: " + insertErr.message;
+    if(photoStoragePath) await db.storage.from('medical-documents').remove([photoStoragePath]);
+    return;
+  }
+
+  const meal = getSel('mealGroup');
+  const { error: logErr } = await db.from('diet_entries').insert({
+    user_id: currentUser.id, entry_date: state.currentDate, food_id: inserted.id, servings, meal
+  });
+
+  await loadFoods();
+  await refreshDietLog();
+
+  supScan = null;
+  document.getElementById('supplementScanReview').style.display = 'none';
+  document.getElementById('supplementScanStatus').style.color = 'var(--teal-deep)';
+  document.getElementById('supplementScanStatus').textContent = logErr
     ? 'Saved to your personal food list, but logging it today failed — find it in the food search above and add it manually.'
     : "Saved and logged — it's yours to use any time now without rescanning. Aravinth's team reviews new scans before they join the shared catalog for everyone.";
 };
