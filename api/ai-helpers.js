@@ -20,6 +20,14 @@
 // api/explain-marker.js, api/recipe-ideas.js, and api/photo-log.js in git
 // history for the pre-merge originals. packaged-food-scan,
 // supplement-scan, and review-submission are new.
+//
+// packaged-food-scan, supplement-scan, and review-submission all take
+// `images` -- an array of 1 to MAX_SCAN_IMAGES {imageBase64, mediaType}
+// photos of the SAME product, not a single image -- since a real label is
+// routinely split across several photos (front for the product name,
+// back for the nutrition panel, a third angle to beat glare). See
+// buildImageBlocks() below, which validates the array once and turns it
+// into Claude image content blocks for all three.
 
 const db = require('../lib/supabase-rest');
 
@@ -55,6 +63,38 @@ function extractJson(rawText){
   const end = cleaned.lastIndexOf('}');
   if (start !== -1 && end !== -1) cleaned = cleaned.slice(start, end + 1);
   return cleaned;
+}
+
+// Shared mechanism (not extraction logic) for the three label-reading
+// kinds below that now accept more than one photo of the same product --
+// packaged-food-scan, supplement-scan, and review-submission. A single
+// real label is routinely split across several photos (front for the
+// product name, back for the nutrition panel, maybe a third angle to
+// catch glare on one corner -- exactly how Aravinth's own real examples
+// were captured), so each of these kinds takes `images`, an array of
+// {imageBase64, mediaType}, and turns it into one ordered run of Claude
+// image content blocks. Validates the shape here once rather than three
+// times: 1-6 images (a generous cap matching the largest real example
+// seen so far, while still bounding request size/latency/cost), each a
+// non-empty base64 string. Returns {blocks, error} -- error is a
+// user-facing string when the shape is invalid, blocks is the content
+// array otherwise.
+const MAX_SCAN_IMAGES = 6;
+function buildImageBlocks(images){
+  if (!Array.isArray(images) || images.length === 0) {
+    return { error: 'Missing required field: images (a non-empty array of photos).' };
+  }
+  if (images.length > MAX_SCAN_IMAGES) {
+    return { error: `Too many photos -- up to ${MAX_SCAN_IMAGES} per scan is supported.` };
+  }
+  const blocks = [];
+  for (const img of images) {
+    if (!img || typeof img.imageBase64 !== 'string' || !img.imageBase64) {
+      return { error: 'Each item in images must include a non-empty imageBase64 string.' };
+    }
+    blocks.push({ type: 'image', source: { type: 'base64', media_type: img.mediaType || 'image/jpeg', data: img.imageBase64 } });
+  }
+  return { blocks };
 }
 
 // ---------- explain-marker (formerly api/explain-marker.js) ----------
@@ -216,23 +256,21 @@ Respond with ONLY the sentence itself (or NO_FOOD_DETECTED) — no preamble, no 
 // named-but-unquantified note, never folded into a numeric value.
 
 async function handlePackagedFoodScan(req, res, apiKey){
-  const { imageBase64, mediaType } = req.body || {};
-  if (!imageBase64) {
-    res.status(400).json({ error: 'Missing required field: imageBase64.' });
-    return;
-  }
+  const { images } = req.body || {};
+  const { blocks, error } = buildImageBlocks(images);
+  if (error) { res.status(400).json({ error }); return; }
 
   const systemPrompt = `You are a label-reading assistant embedded in a health app called NutriGap.
-You will be shown a photo of a packaged/retail food's label (nutrition panel, and usually an ingredients list and the product name/brand). Your ONLY job is to extract what is explicitly printed -- nothing else.
+You will be shown ${blocks.length > 1 ? blocks.length + ' photos of the SAME packaged/retail food\'s label' : 'a photo of a packaged/retail food\'s label'} (nutrition panel, and usually an ingredients list and the product name/brand). Your ONLY job is to extract what is explicitly printed -- nothing else.
 
 Rules you must follow without exception:
-- Extract only values that are explicitly printed on the label. Never infer, estimate, or guess a value that isn't printed -- if a field isn't stated anywhere on the label, set it to null. This applies to every nutrient, including vitamins and minerals.
+${blocks.length > 1 ? '- These photos are different angles/panels of ONE product (e.g. front of pack, back nutrition panel, a close-up of a blurry corner) -- combine what each one shows into a single, coherent record rather than treating them separately. If two photos disagree on a value, prefer whichever is more clearly legible; never average or split the difference, and never let a blurry/ambiguous photo override a clearly legible one.\n' : ''}- Extract only values that are explicitly printed on the label. Never infer, estimate, or guess a value that isn't printed -- if a field isn't stated anywhere on the label (in any of the photos shown), set it to null. This applies to every nutrient, including vitamins and minerals.
 - If the ingredients list names an added vitamin/mineral/fortificant with NO quantity printed anywhere (e.g. "added Vitamin B12" with no mg/mcg stated), do not invent a number for it -- instead add its name (as printed) to "unquantifiedAdditives". Never estimate a micronutrient amount from an ingredient's mere presence (e.g. never estimate vitamin C because an ingredient is "orange juice concentrate") -- ingredient lists carry no quantities, so that would be a guess, not a fact.
 - "servingSizeText" is the serving size exactly as printed (e.g. "30g (about 1/4 cup)"). All the nutrient numbers you extract must be the values for that same stated serving -- if the label shows both a per-100g and a per-serving column, use the per-serving column; if only a per-100g column exists, say so by setting servingSizeText to "100g" and use that column.
 - Report every amount in these exact units, converting if the label uses a different one (standard conversions, e.g. IU -> mcg for vitamin A/D using the standard factor for that vitamin's form): kcal in kcal; protein/carbs/fat/fiber in grams (g); sodium/calcium/iron/magnesium/zinc/potassium/vitamin C/vitamin E/vitamin B6 in milligrams (mg); vitamin D/vitamin B12/vitamin A/vitamin K/folate/selenium in micrograms (mcg). If you can't convert a printed unit to the required one with confidence, leave that field null rather than guess at the conversion.
-- "productName" and "brand" should be read from the packaging if visible in the photo; set either to null if not visible (the person will be asked to confirm or fill these in regardless).
-- "ingredientsText" is the ingredients list exactly as printed, if visible; otherwise null.
-- If the photo doesn't show a food package's nutrition label at all, set "notAFoodLabel" to true and leave every other field null/empty.
+- "productName" and "brand" should be read from the packaging if visible in any of the photos; set either to null if not visible anywhere (the person will be asked to confirm or fill these in regardless).
+- "ingredientsText" is the ingredients list exactly as printed, if visible in any photo; otherwise null.
+- If NONE of the photos shown actually show a food package's nutrition label, set "notAFoodLabel" to true and leave every other field null/empty.
 
 Respond with ONLY a JSON object -- no markdown, no code fences, no commentary -- in exactly this shape:
 {"notAFoodLabel": false, "productName": "... or null", "brand": "... or null", "servingSizeText": "... or null", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0, "fiber": null, "sodium": null, "iron": null, "calcium": null, "vitD": null, "vitB12": null, "vitC": null, "vitA": null, "vitE": null, "vitK": null, "folate": null, "vitB6": null, "magnesium": null, "zinc": null, "potassium": null, "selenium": null, "ingredientsText": "... or null", "unquantifiedAdditives": []}`;
@@ -243,8 +281,8 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageBase64 } },
-          { type: 'text', text: "Extract this food label's nutrition information, following your instructions exactly." },
+          ...blocks,
+          { type: 'text', text: `Extract this food label's nutrition information${blocks.length > 1 ? ' from these ' + blocks.length + ' photos together' : ''}, following your instructions exactly.` },
         ],
       }],
     });
@@ -314,25 +352,23 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
 //    own fields, per the same lean-V1 choice.
 
 async function handleSupplementScan(req, res, apiKey){
-  const { imageBase64, mediaType } = req.body || {};
-  if (!imageBase64) {
-    res.status(400).json({ error: 'Missing required field: imageBase64.' });
-    return;
-  }
+  const { images } = req.body || {};
+  const { blocks, error } = buildImageBlocks(images);
+  if (error) { res.status(400).json({ error }); return; }
 
   const systemPrompt = `You are a label-reading assistant embedded in a health app called NutriGap.
-You will be shown a photo of a dietary supplement's label (a gummy, protein powder, capsule, tablet, or similar -- not an ordinary packaged food). Your ONLY job is to extract what is explicitly printed -- nothing else.
+You will be shown ${blocks.length > 1 ? blocks.length + ' photos of the SAME dietary supplement\'s label' : 'a photo of a dietary supplement\'s label'} (a gummy, protein powder, capsule, tablet, or similar -- not an ordinary packaged food). Your ONLY job is to extract what is explicitly printed -- nothing else.
 
 Rules you must follow without exception:
-- Extract only values that are explicitly printed on the label. Never infer, estimate, or guess a value that isn't printed -- if a field isn't stated anywhere on the label, set it to null. This applies to every nutrient, including vitamins and minerals.
+${blocks.length > 1 ? '- These photos are different angles/panels of ONE product (e.g. front of pack, the main nutrition panel, a close-up of a blurry corner) -- combine what each one shows into a single, coherent record rather than treating them separately. If two photos disagree on a value, prefer whichever is more clearly legible; never average or split the difference, and never let a blurry/ambiguous photo override a clearly legible one.\n' : ''}- Extract only values that are explicitly printed on the label. Never infer, estimate, or guess a value that isn't printed -- if a field isn't stated anywhere on the label (in any of the photos shown), set it to null. This applies to every nutrient, including vitamins and minerals.
 - NEVER extract or report a %RDA / %DV / %RDI percentage for anything -- only the absolute per-serving amount (e.g. "20 mg", not "66%"). Supplement labels calculate their %RDA against whatever population they chose (children, sedentary adult women, etc.), which is almost never the person actually using this app, so that percentage would be actively misleading if stored or shown. If a sentence on the label explains what population/activity level the %RDA is based on (e.g. "as per ICMR 2020 guidelines for Women's Sedentary Work"), copy that sentence into labelNotes for the record, but never use it to compute or report a percentage yourself.
 - "servingSizeText" is the serving size exactly as printed (e.g. "1 gummy (approx 3.4g)", "2 scoops (34g)", "1 capsule"). All the nutrient numbers you extract must be the values for that same stated serving -- if the label shows both a per-100g and a per-serving column, use the per-serving column.
 - Report every amount in these exact units, converting if the label uses a different one (standard conversions, e.g. IU -> mcg for vitamin A/D using the standard factor for that vitamin's form): kcal in kcal; protein/carbs/fat/fiber in grams (g); sodium/calcium/iron/magnesium/zinc/potassium/vitamin C/vitamin E/vitamin B6 in milligrams (mg); vitamin D/vitamin B12/vitamin A/vitamin K/folate/selenium in micrograms (mcg). If you can't convert a printed unit to the required one with confidence, leave that field null rather than guess at the conversion.
-- Many real supplement labels print nutrients that don't fit the fixed list above at all -- a full B-complex (B1/B2/B3/B5/B7), proprietary or compound ingredient blends with one combined weight for several named ingredients, probiotics in Billion CFU, enzyme blends, amino-acid subtotals (EAA/BCAA/NEAA groups), or bioactives with a printed amount but no established RDA (Curcumin, Myo-Inositol, Algal DHA, etc.). Do not force any of these into the fixed numeric fields and do not try to split a combined/blend weight across its named ingredients -- that would be a guess, not a fact. Instead, write each one as a short line in "labelNotes", exactly as printed (name and amount/unit), e.g. "Curcumin 95% - 5 mg (no RDA established)" or "Proprietary blend 100mg: Pomegranate, Apple, Beetroot, Spinach, Carrot".
+- Many real supplement labels print nutrients that don't fit the fixed list above at all -- a full B-complex (B1/B2/B3/B5/B7), proprietary or compound ingredient blends with one combined weight for several named ingredients, probiotics in Billion CFU, enzyme blends, amino-acid subtotals (EAA/BCAA/NEAA groups), specific quantified omega-3 fatty acids (EPA/DHA), fat-subtype breakdowns (saturated/trans/polyunsaturated/monounsaturated fat, cholesterol), or bioactives with a printed amount but no established RDA (Curcumin, Myo-Inositol, Algal DHA, etc.). Do not force any of these into the fixed numeric fields and do not try to split a combined/blend weight across its named ingredients -- that would be a guess, not a fact. Instead, write each one as a short line in "labelNotes", exactly as printed (name and amount/unit), e.g. "Curcumin 95% - 5 mg (no RDA established)", "Proprietary blend 100mg: Pomegranate, Apple, Beetroot, Spinach, Carrot", or "EPA 892 mg, DHA 594 mg (from 2500mg fish oil)".
 - Also capture in "labelNotes", each as its own short line, anything else safety- or usage-relevant that's printed: dosing/usage instructions (e.g. "Eat 1 gummy daily"), any freshness or timing window (e.g. "consume within 15 minutes of mixing", "use within 5 weeks of opening"), age restrictions, and pregnancy/medical-condition disclaimers. Do not editorialize or add advice of your own -- copy what's printed, close to verbatim.
-- "productName" and "brand" should be read from the packaging if visible in the photo; set either to null if not visible (the person will be asked to confirm or fill these in regardless).
-- "ingredientsText" is the ingredients list exactly as printed, if visible; otherwise null.
-- If the photo doesn't show a dietary supplement's label at all, set "notASupplementLabel" to true and leave every other field null/empty.
+- "productName" and "brand" should be read from the packaging if visible in any of the photos; set either to null if not visible anywhere (the person will be asked to confirm or fill these in regardless).
+- "ingredientsText" is the ingredients list exactly as printed, if visible in any photo; otherwise null.
+- If NONE of the photos shown actually show a dietary supplement's label, set "notASupplementLabel" to true and leave every other field null/empty.
 
 Respond with ONLY a JSON object -- no markdown, no code fences, no commentary -- in exactly this shape:
 {"notASupplementLabel": false, "productName": "... or null", "brand": "... or null", "servingSizeText": "... or null", "kcal": 0, "protein": 0, "carbs": 0, "fat": 0, "fiber": null, "sodium": null, "iron": null, "calcium": null, "vitD": null, "vitB12": null, "vitC": null, "vitA": null, "vitE": null, "vitK": null, "folate": null, "vitB6": null, "magnesium": null, "zinc": null, "potassium": null, "selenium": null, "ingredientsText": "... or null", "labelNotes": "... or null"}`;
@@ -343,8 +379,8 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageBase64 } },
-          { type: 'text', text: "Extract this supplement label's information, following your instructions exactly." },
+          ...blocks,
+          { type: 'text', text: `Extract this supplement label's information${blocks.length > 1 ? ' from these ' + blocks.length + ' photos together' : ''}, following your instructions exactly.` },
         ],
       }],
     });
@@ -419,11 +455,13 @@ Respond with ONLY a JSON object -- no markdown, no code fences, no commentary --
 // actual stored photo, never a client-asserted "trust me".
 
 async function handleReviewSubmission(req, res, apiKey){
-  const { foodId, productType, imageBase64, mediaType, submitted } = req.body || {};
-  if (!foodId || !imageBase64 || !submitted || typeof submitted !== 'object') {
-    res.status(400).json({ error: 'Missing required field(s): foodId, imageBase64, submitted.' });
+  const { foodId, productType, images, submitted } = req.body || {};
+  if (!foodId || !submitted || typeof submitted !== 'object') {
+    res.status(400).json({ error: 'Missing required field(s): foodId, images, submitted.' });
     return;
   }
+  const { blocks, error } = buildImageBlocks(images);
+  if (error) { res.status(400).json({ error }); return; }
   const isSupplement = productType === 'supplement';
 
   const submittedSummary = JSON.stringify({
@@ -438,9 +476,9 @@ async function handleReviewSubmission(req, res, apiKey){
     otherNotes: isSupplement ? (submitted.labelNotes || null) : (submitted.unquantifiedAdditives || []),
   }, null, 2);
 
-  const systemPrompt = `You are a quality-control reviewer embedded in a health app called NutriGap. A user photographed a ${isSupplement ? "dietary supplement's" : "packaged food's"} label, an earlier AI pass extracted its nutrition facts, and the user then reviewed and could freely edit every value before saving. Your job is to check, against the SAME photo, whether what they actually saved is genuinely supported by what's printed -- catching either a bad original read or a bad manual edit, since both look identical by the time you see them.
+  const systemPrompt = `You are a quality-control reviewer embedded in a health app called NutriGap. A user photographed a ${isSupplement ? "dietary supplement's" : "packaged food's"} label${blocks.length > 1 ? ' (across ' + blocks.length + ' photos -- different angles/panels of the same product)' : ''}, an earlier AI pass extracted its nutrition facts, and the user then reviewed and could freely edit every value before saving. Your job is to check, against the SAME photo${blocks.length > 1 ? 's' : ''}, whether what they actually saved is genuinely supported by what's printed -- catching either a bad original read or a bad manual edit, since both look identical by the time you see them.
 
-You will be shown the photo again and told exactly what was saved. Decide "approved" or "rejected" -- there is no third option. When genuinely unsure, choose "rejected": a doubtful submission should never silently join the shared catalog everyone else sees, and rejecting is cheap -- the person just rescans.
+You will be shown ${blocks.length > 1 ? 'those same ' + blocks.length + ' photos' : 'the photo'} again and told exactly what was saved. Decide "approved" or "rejected" -- there is no third option. When genuinely unsure, choose "rejected": a doubtful submission should never silently join the shared catalog everyone else sees, and rejecting is cheap -- the person just rescans.
 
 Reject when:
 - Any saved numeric value clearly disagrees with what's printed -- a materially different number, a misplaced decimal point, or a different unit than what the label actually shows. Minor differences consistent with ordinary rounding are fine; a value that's off by a large margin, or present when the label shows nothing for it, is not.
@@ -468,8 +506,8 @@ ${submittedSummary}`;
       messages: [{
         role: 'user',
         content: [
-          { type: 'image', source: { type: 'base64', media_type: mediaType || 'image/jpeg', data: imageBase64 } },
-          { type: 'text', text: 'Check the saved data above against this photo, following your instructions exactly.' },
+          ...blocks,
+          { type: 'text', text: `Check the saved data above against ${blocks.length > 1 ? 'these photos' : 'this photo'}, following your instructions exactly.` },
         ],
       }],
     });
