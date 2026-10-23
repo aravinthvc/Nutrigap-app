@@ -122,24 +122,60 @@ function parseDurationSeconds(s){
   return isNaN(n) ? 0 : n;
 }
 
-async function syncFitbitExerciseSessions(ctx){
+// Pages through a Google Health data type's dataPoints, newest-first (the
+// API's own default order), accumulating results until either there's no
+// next page or a page's OLDEST point already predates `cutoff` -- at which
+// point every later page would be even older, so it's safe to stop.
+//
+// Deliberately does NOT send a `filter` query param. `exercise` is a
+// Session-kind record (unlike interval types like steps), and session
+// filtering uses a different field convention that isn't fully documented
+// — a first attempt using the interval-type convention (interval.start_time)
+// failed with INVALID_DATA_POINT_FILTER against the live API. Rather than
+// guess again (and risk the same failure for other types), every caller
+// here pages through unfiltered results instead and filters client-side —
+// one proven-safe approach, used consistently rather than filtering one
+// data type and not another.
+//
+// `maxPages` is a defensive cap so a very active account (or an unexpected
+// API response shape) can't turn one sync into an unbounded number of
+// requests.
+async function fetchGoogleHealthDataPoints(dataType, accessToken, { pageSize, cutoff, maxPages }){
+  const points = [];
+  let pageToken = '';
+  for (let page = 0; page < maxPages; page++) {
+    const url = `https://health.googleapis.com/v4/users/me/dataTypes/${dataType}/dataPoints?pageSize=${pageSize}`
+      + (pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : '');
+    const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
+    if (!res.ok) throw new Error(`Google Health ${dataType} fetch failed: ` + await res.text());
+    const data = await res.json();
+    const batch = data.dataPoints || [];
+    points.push(...batch);
+    pageToken = data.nextPageToken || '';
+    if (!pageToken || batch.length === 0) break;
+    const oldestStart = getIntervalStart(batch[batch.length - 1]);
+    if (oldestStart && new Date(oldestStart) < cutoff) break;
+  }
+  return points;
+}
+
+function getIntervalStart(point){
+  if (point.exercise && point.exercise.interval) return point.exercise.interval.startTime;
+  if (point.activeMinutes && point.activeMinutes.interval) return point.activeMinutes.interval.startTime;
+  return null;
+}
+
+async function syncFitbitExerciseSessions(ctx, days){
   const { userId, accessToken, activitiesByKeyword } = ctx;
   const fallback = activitiesByKeyword['fitbit moderate'];
+  const since = new Date(); since.setDate(since.getDate() - days);
 
-  // Deliberately no server-side filter here. `exercise` is a Session-kind
-  // record (unlike interval types like steps), and session filtering uses
-  // a different field convention that isn't fully documented — a first
-  // attempt using the interval-type convention (interval.start_time)
-  // failed with INVALID_DATA_POINT_FILTER against the live API. Rather
-  // than guess again, fetch recent sessions unfiltered and restrict to
-  // the last 7 days in code below — avoids depending on getting Google's
-  // exact filter syntax right for this specific record kind.
-  const since = new Date(); since.setDate(since.getDate() - 7);
-  const url = `https://health.googleapis.com/v4/users/me/dataTypes/exercise/dataPoints?pageSize=50`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
-  if (!res.ok) throw new Error('Google Health exercise fetch failed: ' + await res.text());
-  const data = await res.json();
-  const points = (data.dataPoints || []).filter(p => {
+  // exercise/sleep cap at 25 results per page (Google's documented max for
+  // these two types); 40 pages (= 1,000 sessions) comfortably covers even
+  // the longest offered window (365 days) for anyone short of multiple
+  // logged workouts a day.
+  const rawPoints = await fetchGoogleHealthDataPoints('exercise', accessToken, { pageSize: 25, cutoff: since, maxPages: 40 });
+  const points = rawPoints.filter(p => {
     const startTime = p.exercise && p.exercise.interval && p.exercise.interval.startTime;
     return startTime && new Date(startTime) >= since;
   });
@@ -169,7 +205,7 @@ async function syncFitbitExerciseSessions(ctx){
 // data type's activityLevel enum (LIGHT/MODERATE/VIGOROUS) maps directly
 // onto this app's own intensity taxonomy and the generic "Fitbit-tracked
 // activity" reference rows created in 08_wearable_integrations.sql.
-async function syncFitbitActiveMinutes(ctx){
+async function syncFitbitActiveMinutes(ctx, days){
   const { userId, accessToken, activitiesByKeyword } = ctx;
   const levelToActivity = {
     LIGHT: activitiesByKeyword['fitbit light'],
@@ -177,12 +213,12 @@ async function syncFitbitActiveMinutes(ctx){
     VIGOROUS: activitiesByKeyword['fitbit vigorous'],
   };
 
-  const since = new Date(); since.setDate(since.getDate() - 7);
-  const url = `https://health.googleapis.com/v4/users/me/dataTypes/active-minutes/dataPoints?pageSize=50`;
-  const res = await fetch(url, { headers: { Authorization: 'Bearer ' + accessToken, Accept: 'application/json' } });
-  if (!res.ok) throw new Error('Google Health active-minutes fetch failed: ' + await res.text());
-  const data = await res.json();
-  const points = (data.dataPoints || []).filter(p => {
+  const since = new Date(); since.setDate(since.getDate() - days);
+  // active-minutes allows up to 10,000 results per page (Google's
+  // documented max for most non-session types) — even a full year of daily
+  // data is a few thousand rows at most, so a handful of pages is plenty.
+  const rawPoints = await fetchGoogleHealthDataPoints('active-minutes', accessToken, { pageSize: 500, cutoff: since, maxPages: 5 });
+  const points = rawPoints.filter(p => {
     const st = p.activeMinutes && p.activeMinutes.interval && p.activeMinutes.interval.startTime;
     return st && new Date(st) >= since;
   });
@@ -215,12 +251,12 @@ async function syncFitbitActiveMinutes(ctx){
   return rows;
 }
 
-async function syncFitbit(ctx){
+async function syncFitbit(ctx, days){
   // Combine deliberate workout sessions with passive daily activity —
   // two different Google Health data types, merged into one row set.
   const [sessions, activeMinutes] = await Promise.all([
-    syncFitbitExerciseSessions(ctx),
-    syncFitbitActiveMinutes(ctx),
+    syncFitbitExerciseSessions(ctx, days),
+    syncFitbitActiveMinutes(ctx, days),
   ]);
   return [...sessions, ...activeMinutes];
 }
@@ -236,15 +272,27 @@ const STRAVA_TYPE_MAP = {
   Soccer: 'soccer', Dance: 'dancing',
 };
 
-async function syncStrava(ctx){
+async function syncStrava(ctx, days){
   const { userId, accessToken, activitiesByKeyword, activitiesList } = ctx;
-  const after = Math.floor(Date.now()/1000) - 7*24*60*60;
-  const res = await fetch(`https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=50`, {
-    headers: { Authorization: 'Bearer ' + accessToken },
-  });
-  if (!res.ok) throw new Error('Strava activities fetch failed: ' + await res.text());
-  const activities = await res.json();
+  const after = Math.floor(Date.now()/1000) - days*24*60*60;
   const fallback = activitiesByKeyword['strava other'];
+
+  // Strava's own `after` filter already limits results server-side, but a
+  // long window (e.g. a year) can still span more than one page for an
+  // active athlete — Strava paginates at up to 200 per page. Keep fetching
+  // until a short page signals we've reached the end; capped defensively
+  // so one sync can't run away.
+  const activities = [];
+  const STRAVA_MAX_PAGES = 10; // 10 * 200 = 2,000 activities -- generous for any single sync
+  for (let page = 1; page <= STRAVA_MAX_PAGES; page++) {
+    const res = await fetch(`https://www.strava.com/api/v3/athlete/activities?after=${after}&per_page=200&page=${page}`, {
+      headers: { Authorization: 'Bearer ' + accessToken },
+    });
+    if (!res.ok) throw new Error('Strava activities fetch failed: ' + await res.text());
+    const batch = await res.json();
+    activities.push(...batch);
+    if (batch.length < 200) break;
+  }
 
   return activities.map(a => {
     const kw = STRAVA_TYPE_MAP[a.type] || STRAVA_TYPE_MAP[a.sport_type];
@@ -270,11 +318,18 @@ async function handleSync(req, res, env){
 
   const authHeader = req.headers.authorization || '';
   const userToken = authHeader.replace(/^Bearer\s+/i, '');
-  const { provider } = req.body || {};
+  const { provider, days: rawDays } = req.body || {};
   if (!userToken || !['fitbit','strava'].includes(provider)) {
     res.status(400).json({ error: 'Missing or invalid provider, or not signed in.' });
     return;
   }
+  // The website offers a fixed set of lookback windows (see the
+  // rw-days-select dropdown in index.html) -- validate against that same
+  // set rather than trusting an arbitrary client-supplied number, and fall
+  // back to the original 7-day default (used by the quiet background
+  // auto-sync, which never sends `days` at all) for anything else.
+  const ALLOWED_SYNC_DAYS = [7, 30, 90, 365];
+  const days = ALLOWED_SYNC_DAYS.includes(Number(rawDays)) ? Number(rawDays) : 7;
 
   try {
     const user = await verifyUser(SUPABASE_URL, SUPABASE_ANON_KEY, userToken);
@@ -302,7 +357,7 @@ async function handleSync(req, res, env){
     activitiesList.forEach(a => (a.keywords || []).forEach(k => { activitiesByKeyword[k] = a; }));
 
     const ctx = { SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, userId: user.id, accessToken: conn.access_token, activitiesByKeyword, activitiesList };
-    const rows = provider === 'fitbit' ? await syncFitbit(ctx) : await syncStrava(ctx);
+    const rows = provider === 'fitbit' ? await syncFitbit(ctx, days) : await syncStrava(ctx, days);
 
     let imported = 0;
     if (rows.length) {
@@ -324,7 +379,7 @@ async function handleSync(req, res, env){
       }
     }
 
-    const note = `Imported ${imported} new entr${imported===1?'y':'ies'} from the last 7 days.`;
+    const note = `Imported ${imported} new entr${imported===1?'y':'ies'} from the last ${days} day${days===1?'':'s'}.`;
     await fetch(SUPABASE_URL + '/rest/v1/wearable_status?on_conflict=user_id,provider', {
       method: 'POST',
       headers: {
