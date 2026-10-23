@@ -499,6 +499,7 @@
   .real-wearable-row .rw-meta{ font-size:12px; color:var(--ink-soft); margin-top:2px; }
   .real-wearable-row .rw-actions{ display:flex; gap:8px; align-items:center; flex-shrink:0; }
   .rw-badge{ font-size:11px; padding:3px 9px; border-radius:20px; background:var(--teal-wash); color:var(--teal-deep); }
+  .rw-days-select{ padding:7px 9px; border:1px solid var(--line); border-radius:4px; font-family:inherit; font-size:12.5px; }
 
   @media (max-width: 620px){
     .field-row{ grid-template-columns:1fr; }
@@ -7037,7 +7038,13 @@ async function renderRealWearables(){
       </div>
       <div class="rw-actions">
         ${connected
-          ? `<button class="btn ghost small rw-sync-btn">Sync now</button><button class="btn ghost small rw-disconnect-btn">Disconnect</button>`
+          ? `<select class="rw-days-select" title="How far back to sync">
+              <option value="7">Last 7 days</option>
+              <option value="30" selected>Last 30 days</option>
+              <option value="90">Last 90 days</option>
+              <option value="365">Last 365 days</option>
+            </select>
+            <button class="btn ghost small rw-sync-btn">Sync now</button><button class="btn ghost small rw-disconnect-btn">Disconnect</button>`
           : `<button class="btn small rw-connect-btn">Connect</button>`}
       </div>
     </div>`;
@@ -7057,6 +7064,8 @@ async function renderRealWearables(){
     btn.onclick = async ()=>{
       const row = btn.closest('.real-wearable-row');
       const provider = row.dataset.provider;
+      const daysSelect = row.querySelector('.rw-days-select');
+      const days = daysSelect ? parseInt(daysSelect.value, 10) : 7;
       const token = await getUserAccessToken();
       if(!token) return;
       btn.disabled = true; btn.textContent = 'Syncing…';
@@ -7064,7 +7073,7 @@ async function renderRealWearables(){
         const res = await fetch('/api/wearable-actions', {
           method: 'POST',
           headers: { 'Content-Type':'application/json', Authorization: 'Bearer ' + token },
-          body: JSON.stringify({ action: 'sync', provider }),
+          body: JSON.stringify({ action: 'sync', provider, days }),
         });
         const data = await res.json();
         if(!res.ok) throw new Error(data.error || 'Sync failed');
