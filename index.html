@@ -1492,6 +1492,10 @@
           </table>
           </div>
           <div class="note" id="reportSummaryNote"></div>
+          <div class="field" style="margin-top:14px;">
+            <label for="reportReasonInput">Reason for this report / test — optional</label>
+            <input type="text" id="reportReasonInput" placeholder="e.g. Annual checkup, Fever workup, Doctor recommended">
+          </div>
           <div style="text-align:right; margin-top:14px;">
             <button class="btn ghost small" id="saveReportBtn">Save to my reports</button>
           </div>
@@ -1501,6 +1505,7 @@
 
       <div class="card" style="margin-top:20px;">
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your saved reports</h3>
+        <input type="text" id="reportsSearchInput" placeholder="Search by reason, patient name, date..." style="width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-size:13px; margin-bottom:12px; box-sizing:border-box;">
         <div id="savedReportsList"></div>
         <div class="empty" id="savedReportsEmpty">No reports saved yet.</div>
       </div>
@@ -1550,6 +1555,10 @@
             <input type="date" id="visitFollowUp">
           </div>
         </div>
+        <div class="field">
+          <label for="visitReason">Reason for visit — optional</label>
+          <input type="text" id="visitReason" placeholder="e.g. Fever, Annual checkup, TT Injection">
+        </div>
         <div class="field-row">
           <div class="field">
             <label for="visitDoctor">Doctor's name</label>
@@ -1595,6 +1604,7 @@
 
       <div class="card" style="margin-top:20px;">
         <h3 style="margin-top:0; font-size:15px; color:var(--ink-soft); font-weight:500;">Your visits</h3>
+        <input type="text" id="visitsSearchInput" placeholder="Search by reason, doctor, clinic..." style="width:100%; padding:8px 12px; border:1px solid var(--line); border-radius:var(--radius-s); font-size:13px; margin-bottom:12px; box-sizing:border-box;">
         <div id="visitsList"></div>
         <div class="empty" id="visitsEmpty">No visits saved yet.</div>
       </div>
@@ -5217,6 +5227,11 @@ document.getElementById('analyzeBtn').onclick = async ()=>{
 
 let lastAnalyzedReport = null;
 
+// Holds the full, unfiltered list from the last loadSavedReports() call, so
+// the search box can filter client-side (by reason/patient/date/filename)
+// without re-fetching every keystroke.
+let lastLoadedReports = [];
+
 function renderReportResults(data){
   const metaEl = document.getElementById('reportMeta');
   const bodyEl = document.getElementById('reportBody');
@@ -5312,6 +5327,7 @@ document.getElementById('saveReportBtn').onclick = async ()=>{
     file_name: lastAnalyzedReport.fileName || null,
     markers: lastAnalyzedReport.markers || [],
     storage_path: storagePath,
+    reason: document.getElementById('reportReasonInput').value || null,
   });
   if(error){
     statusEl.style.color = 'var(--rust)';
@@ -5319,6 +5335,7 @@ document.getElementById('saveReportBtn').onclick = async ()=>{
     if(storagePath) await db.storage.from('medical-documents').remove([storagePath]); // avoid an orphaned file with no record
     return;
   }
+  document.getElementById('reportReasonInput').value = '';
   statusEl.style.color = 'var(--teal-deep)';
   statusEl.textContent = storagePath
     ? 'Saved to your reports below, with your original file attached.'
@@ -5334,15 +5351,27 @@ async function loadSavedReports(){
     .eq('user_id', currentUser.id)
     .order('created_at', { ascending: false });
   if(error){ console.error('Could not load saved reports:', error.message); return; }
-  renderSavedReportsList(data || []);
-  renderMedicalTrends(data || []);
+  lastLoadedReports = data || [];
+  applyReportsFilter();
+  renderMedicalTrends(data || []); // trends always show the full history, not the filtered search view
 }
+
+function applyReportsFilter(){
+  const q = (document.getElementById('reportsSearchInput').value || '').trim().toLowerCase();
+  const filtered = !q ? lastLoadedReports : lastLoadedReports.filter(r =>
+    [r.reason, r.patient_name, r.report_date, r.file_name].filter(Boolean).join(' ').toLowerCase().includes(q)
+  );
+  renderSavedReportsList(filtered);
+}
+document.getElementById('reportsSearchInput').oninput = applyReportsFilter;
 
 function renderSavedReportsList(reports){
   const listEl = document.getElementById('savedReportsList');
   const emptyEl = document.getElementById('savedReportsEmpty');
+  const searching = !!(document.getElementById('reportsSearchInput').value || '').trim();
   if(reports.length === 0){
     listEl.innerHTML = '';
+    emptyEl.textContent = searching ? 'No reports match your search.' : 'No reports saved yet.';
     emptyEl.style.display = 'block';
     return;
   }
@@ -5357,12 +5386,17 @@ function renderSavedReportsList(reports){
     metaBits.push(`${markers.length} value${markers.length===1?'':'s'}`);
     if(outOfRange > 0) metaBits.push(`${outOfRange} outside range`);
     const savedOn = new Date(r.created_at).toLocaleDateString(undefined, {year:'numeric', month:'short', day:'numeric'});
+    // The reason is a short recall tag (e.g. "Annual checkup") — shown with
+    // a dash rather than folded into the dot-joined meta bits, so it reads
+    // as its own distinct label when scanning the list for a specific visit.
+    let metaLine = metaBits.join(' · ');
+    if(r.reason) metaLine = metaLine ? `${metaLine} - ${r.reason}` : r.reason;
 
     return `<div class="saved-report" data-id="${r.id}">
       <div class="srow">
         <div>
           <div class="stitle">${r.file_name || 'Untitled report'}</div>
-          <div class="smeta">${metaBits.join(' · ')} · saved ${savedOn}</div>
+          <div class="smeta">${metaLine} · saved ${savedOn}</div>
         </div>
         <div class="sactions">
           <button class="btn ghost small toggle-btn">View</button>
@@ -6195,6 +6229,10 @@ async function deleteVisitFile(fileId, storagePath){
 
 let pendingVisitFiles = [];
 
+// Same idea as lastLoadedReports above, for the visits search box.
+let lastLoadedVisits = [];
+let lastLoadedVisitFiles = {};
+
 function renderPendingVisitFiles(){
   const wrap = document.getElementById('pendingVisitFiles');
   wrap.innerHTML = pendingVisitFiles.map((pf, i)=>`
@@ -6243,6 +6281,7 @@ document.getElementById('addVisitBtn').onclick = async ()=>{
     specialty: document.getElementById('visitSpecialty').value || null,
     clinic_name: document.getElementById('visitClinic').value || null,
     visit_notes: document.getElementById('visitNotes').value || null,
+    reason: document.getElementById('visitReason').value || null,
   }).select().single();
   if(error){ statusEl.style.color='var(--rust)'; statusEl.textContent = "Couldn't save: " + error.message; return; }
 
@@ -6255,7 +6294,7 @@ document.getElementById('addVisitBtn').onclick = async ()=>{
     }
   }
 
-  ['visitDate','visitFollowUp','visitDoctor','visitSpecialty','visitClinic','visitNotes'].forEach(id=>{
+  ['visitDate','visitFollowUp','visitReason','visitDoctor','visitSpecialty','visitClinic','visitNotes'].forEach(id=>{
     document.getElementById(id).value = '';
   });
   pendingVisitFiles = [];
@@ -6287,9 +6326,20 @@ async function loadVisits(){
   const filesByVisit = {};
   (files || []).forEach(f=>{ (filesByVisit[f.visit_id] = filesByVisit[f.visit_id] || []).push(f); });
 
-  renderUpcomingFollowUps(visits || []);
-  renderVisitsList(visits || [], filesByVisit);
+  renderUpcomingFollowUps(visits || []); // always shows the full upcoming list, regardless of the search box below
+  lastLoadedVisits = visits || [];
+  lastLoadedVisitFiles = filesByVisit;
+  applyVisitsFilter();
 }
+
+function applyVisitsFilter(){
+  const q = (document.getElementById('visitsSearchInput').value || '').trim().toLowerCase();
+  const filtered = !q ? lastLoadedVisits : lastLoadedVisits.filter(v =>
+    [v.reason, v.doctor_name, v.specialty, v.clinic_name, v.visit_notes].filter(Boolean).join(' ').toLowerCase().includes(q)
+  );
+  renderVisitsList(filtered, lastLoadedVisitFiles);
+}
+document.getElementById('visitsSearchInput').oninput = applyVisitsFilter;
 
 function renderUpcomingFollowUps(visits){
   const card = document.getElementById('upcomingFollowUpsCard');
@@ -6313,8 +6363,10 @@ function renderUpcomingFollowUps(visits){
 function renderVisitsList(visits, filesByVisit){
   const listEl = document.getElementById('visitsList');
   const emptyEl = document.getElementById('visitsEmpty');
+  const searching = !!(document.getElementById('visitsSearchInput').value || '').trim();
   if(visits.length === 0){
     listEl.innerHTML = '';
+    emptyEl.textContent = searching ? 'No visits match your search.' : 'No visits saved yet.';
     emptyEl.style.display = 'block';
     return;
   }
@@ -6327,11 +6379,16 @@ function renderVisitsList(visits, filesByVisit){
     const followUpBadge = v.follow_up_date
       ? `<span class="vfollowup ${v.follow_up_date < todayStr ? 'overdue' : ''}">Follow-up: ${v.follow_up_date}</span>`
       : '';
+    // Same dash-tag convention as the reports list -- the reason is a short
+    // recall tag, kept visually distinct from the dot-joined doctor/specialty/clinic bits.
+    let metaLine = metaBits.join(' · ');
+    if(v.reason) metaLine = metaLine ? `${metaLine} - ${v.reason}` : v.reason;
+    if(!metaLine) metaLine = 'No doctor/clinic recorded';
     return `<div class="visit-card" data-id="${v.id}">
       <div class="vrow">
         <div>
           <div class="vdate">${v.visit_date}</div>
-          <div class="vmeta">${metaBits.join(' · ') || 'No doctor/clinic recorded'}</div>
+          <div class="vmeta">${metaLine}</div>
         </div>
         <div class="vactions">
           <button class="btn ghost small delete-visit-btn">Delete</button>
