@@ -720,6 +720,26 @@ async function handleCallbackQuery(cq) {
     return;
   }
 
+  if (data.startsWith('uploadswitch:')) {
+    // Follow-up to the "looks like a prescription, not a lab report"
+    // offer in handleReportFileReceived -- reuses the file already
+    // downloaded there instead of asking the person to resend it.
+    const value = data.split(':')[1]; // 'yes' | 'no'
+    const state = link.pending_upload;
+    if (!state || state.type !== 'report_rejected_offer' || !state.prefetchedFile) {
+      await sendMessage(chatId, "That button doesn't apply anymore -- send /uploadvisit to start again.");
+      return;
+    }
+    if (value === 'no') {
+      await clearPendingUpload(chatId);
+      await sendMessage(chatId, 'Okay, discarded -- nothing was saved. Send /uploadreport or /uploadvisit any time.');
+      return;
+    }
+    await setPendingUpload(chatId, { type: 'visit', step: 'visit_date', visit: {}, prefetchedFile: state.prefetchedFile });
+    await sendMessage(chatId, 'What date was the visit? e.g. "2026-09-10" or "10 Sept". Send /documents any time to cancel.');
+    return;
+  }
+
   if (data.startsWith('upload:')) {
     const state = link.pending_upload;
     if (!state || !state.step) {
@@ -792,6 +812,13 @@ async function handleCallbackQuery(cq) {
         }
       }
       newState.step = 'awaiting_file';
+      if (newState.prefetchedFile) {
+        // Came from the "looks like a prescription" switch-over -- the
+        // file's already downloaded, no need to ask for it again.
+        await setPendingUpload(chatId, newState);
+        await saveVisitFile(chatId, link.user_id, newState, newState.prefetchedFile);
+        return;
+      }
       await setPendingUpload(chatId, newState);
       await sendMessage(chatId, 'Now send the file (photo or PDF).');
       return;
@@ -2206,11 +2233,21 @@ async function handleDocumentButton(chatId, userId, data) {
 // the website's "Add visit" form does -- just as a short guided
 // conversation instead of a form, since Telegram has no form fields.
 // State lives in telegram_links.pending_upload (jsonb), the same pattern as
-// pending_log: {type: 'report'|'visit', step, ...}. A report's steps are
-// 'awaiting_file' -> 'confirm' (shows the extracted summary, waits for a
-// Save/Discard tap). A visit's steps are 'visit_date' -> 'doctor_name' ->
+// pending_log: {type: 'report'|'visit'|'report_rejected_offer', step, ...}.
+// A report's steps are 'awaiting_file' -> 'confirm' (shows the extracted
+// summary, waits for a Save/Discard tap) -- or, if the file turns out to
+// look like a prescription/bill/note rather than a lab report, it instead
+// becomes type 'report_rejected_offer', step 'awaiting_switch_choice',
+// carrying a prefetchedFile ({fileId, mimeType, fileName} -- see
+// resolveIncomingFile) while it waits for a Yes/No tap (the uploadswitch:
+// callback below). A visit's steps are 'visit_date' -> 'doctor_name' ->
 // 'specialty' -> 'clinic_name' -> 'doc_type' -> 'awaiting_file' ->
 // 'more_files' (loops back to 'doc_type' for another file, or finishes).
+// A visit state can also carry that same prefetchedFile (set once, by the
+// uploadswitch: callback below, when the person said yes to the switch) --
+// when present, the doc_type handler saves it immediately instead of
+// prompting for a new upload, and clears it right after so a later "add
+// another" file always goes through the normal ask-for-a-file step.
 //
 // The extraction system prompt below is a deliberate copy of
 // api/read-report.js's -- same highest-sensitivity rules (extraction only,
@@ -2292,11 +2329,12 @@ Rules you must follow without exception:
 - Do not diagnose any condition. Do not explain what a marker means medically. Do not speculate on causes. Do not recommend treatment, supplements, or lifestyle changes.
 - Do not comment on the person's overall health status or how "concerning" any result is.
 - If the document does not appear to be any kind of medical or lab report at all (e.g. it's a photo of something unrelated), set "notAReport" to true and return an empty "markers" array.
+- When "notAReport" is true, also set "looksLikeVisitDoc" to true if the document still looks like it's from a doctor/clinic/pharmacy but isn't a lab report -- a handwritten or printed prescription (Rx), a medicine list, a consultation note, or a medical bill/receipt. Set it to false for anything else (a random photo, a document from an unrelated context, something unreadable). When "notAReport" is false, always set "looksLikeVisitDoc" to false.
 - If you can find a report date printed on the document, include it as "reportDate" (as printed); otherwise null.
 - If you can find the patient's name printed on the document, include it as "patientName" (as printed); otherwise null.
 
 Respond with ONLY a JSON object -- no markdown, no code fences, no commentary before or after -- in exactly this shape:
-{"notAReport": false, "reportDate": "... or null", "patientName": "... or null", "markers": [{"name": "...", "value": "...", "unit": "... or null", "referenceRange": "... or null", "flag": "Low"}]}`;
+{"notAReport": false, "looksLikeVisitDoc": false, "reportDate": "... or null", "patientName": "... or null", "markers": [{"name": "...", "value": "...", "unit": "... or null", "referenceRange": "... or null", "flag": "Low"}]}`;
 
 async function extractReportFromFileTG(base64, mediaType) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -2384,6 +2422,20 @@ async function handleReportFileReceived(chatId, userId, state, message) {
   }
 
   if (parsed.notAReport) {
+    if (parsed.looksLikeVisitDoc) {
+      // Likely a prescription/bill/consultation note sent through the wrong
+      // flow -- rather than a generic "not a report" dead end, offer a
+      // one-tap switch to /uploadvisit that reuses the file already
+      // downloaded above, so the person doesn't have to resend the photo.
+      await setPendingUpload(chatId, {
+        type: 'report_rejected_offer', step: 'awaiting_switch_choice',
+        prefetchedFile: { fileId: resolved.fileId, mimeType: resolved.mimeType, fileName: resolved.fileName },
+      });
+      await sendMessage(chatId,
+        "That doesn't look like a lab report -- it looks more like a prescription, bill, or consultation note instead. I didn't save anything yet. Want me to save it as a doctor visit instead?",
+        [[{ text: '📋 Yes, save as a visit', callback_data: 'uploadswitch:yes' }, { text: '❌ No, discard', callback_data: 'uploadswitch:no' }]]);
+      return;
+    }
     await sendMessage(chatId, "That doesn't look like a medical/lab report to me, so I didn't save anything. Send a clearer photo/PDF, or /documents to cancel.");
     return;
   }
@@ -2452,12 +2504,16 @@ async function handleVisitTextStep(chatId, userId, state, text) {
   }
 }
 
-async function handleVisitFileReceived(chatId, userId, state, message) {
-  const resolved = resolveIncomingFile(message);
-  if (!resolved || !resolved.supported) {
-    await sendMessage(chatId, 'I can only save PDF, JPEG, PNG, or WEBP files -- try a different format, or use the website instead.');
-    return;
-  }
+// Core "download + store + attach to the visit" logic, shared by the
+// normal awaiting_file step (a real incoming message, via
+// handleVisitFileReceived below) and the prefetched-file path (reusing
+// a file already downloaded for a rejected report -- see the
+// uploadswitch: callback and the doc_type handler above). `resolved` is
+// always {fileId, mimeType, fileName, supported?} -- supported is only
+// checked by the caller, since the prefetched path already knows it's
+// a file this flow accepted once already (it came through
+// handleReportFileReceived's own PDF/JPEG/PNG/WEBP check).
+async function saveVisitFile(chatId, userId, state, resolved) {
   const visitId = state.visit && state.visit.id;
   if (!visitId) {
     await clearPendingUpload(chatId);
@@ -2488,9 +2544,22 @@ async function handleVisitFileReceived(chatId, userId, state, message) {
     return;
   }
 
-  await setPendingUpload(chatId, { ...state, step: 'more_files' });
+  // Strip prefetchedFile (if any) -- it's a one-time-use carryover from
+  // the rejected-report switch; a second file for the same visit ("add
+  // another") always goes through the normal ask-for-a-file step.
+  const { prefetchedFile, ...rest } = state;
+  await setPendingUpload(chatId, { ...rest, step: 'more_files' });
   await sendMessage(chatId, `Saved as ${DOC_TYPE_LABELS_TG[state.docType] || 'a file'}. Add another file to this visit?`,
     [[{ text: '➕ Yes, add another', callback_data: 'upload:morefiles:yes' }, { text: '✅ Done', callback_data: 'upload:morefiles:no' }]]);
+}
+
+async function handleVisitFileReceived(chatId, userId, state, message) {
+  const resolved = resolveIncomingFile(message);
+  if (!resolved || !resolved.supported) {
+    await sendMessage(chatId, 'I can only save PDF, JPEG, PNG, or WEBP files -- try a different format, or use the website instead.');
+    return;
+  }
+  await saveVisitFile(chatId, userId, state, resolved);
 }
 
 // Entry point from the main handler below whenever telegram_links.pending_upload
@@ -2507,6 +2576,10 @@ async function handleUploadFlowMessage(chatId, userId, state, ctx) {
       return;
     }
     await sendMessage(chatId, 'Tap "Save" or "Discard" above to continue, or /documents to cancel.');
+    return;
+  }
+  if (state.type === 'report_rejected_offer') {
+    await sendMessage(chatId, 'Tap one of the buttons above to continue, or /documents to cancel.');
     return;
   }
   if (state.type === 'visit') {
