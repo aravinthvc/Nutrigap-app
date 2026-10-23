@@ -2792,7 +2792,22 @@ async function refreshDietLog(){
     // the other way around silently replaces the diary entry's real id with
     // the catalog item's id, which made every delete/edit target the wrong
     // row (and match nothing, since those ids and diet_entries ids differ).
-    entriesCache = data.map(row => ({
+    //
+    // A diet_entries row's embedded foods/meal_box_items can come back null
+    // -- the row it points to was deleted, or (for a food) is no longer
+    // visible to this user under RLS -- and mapFoodRow()/mapMealBoxRow()
+    // both assume a real row and throw on null. One such entry used to
+    // crash this whole page (and the Trends page's 30-day equivalent) with
+    // no on-screen explanation; it's now skipped and logged instead, so a
+    // single bad reference can't take down the rest of a day's log.
+    entriesCache = data.filter(row => {
+      const ref = row.meal_box_item_id ? row.meal_box_items : row.foods;
+      if(!ref){
+        console.warn(`Diet entry ${row.id} on ${row.entry_date} references a ${row.meal_box_item_id ? 'meal box item' : 'food'} that no longer exists or isn't visible to this account — hidden from the log instead of crashing it.`);
+        return false;
+      }
+      return true;
+    }).map(row => ({
       ...(row.meal_box_item_id ? mapMealBoxRow(row.meal_box_items) : mapFoodRow(row.foods)),
       id: row.id,
       servings: row.servings,
@@ -7184,6 +7199,17 @@ async function fetchEntriesRange(startStr, endStr){
     // Same ordering fix as refreshDietLog() above: mapFoodRow's own "id"
     // (the food's id) must be spread in before the real diet_entries id,
     // not after, or it silently overwrites it.
+    //
+    // Same null-guard as refreshDietLog() too: an embedded foods(*) can come
+    // back null (deleted food, or no longer RLS-visible) and mapFoodRow()
+    // throws on null -- which used to abort this whole function (and every
+    // chart/stat that depends on it, for the ENTIRE selected date range) on
+    // just one bad row, with nothing on screen to explain why. Skip that
+    // one day's entry instead.
+    if(!row.foods){
+      console.warn(`Diet entry ${row.id} on ${row.entry_date} references a food that no longer exists or isn't visible to this account — skipped from trends instead of crashing the page.`);
+      return;
+    }
     const entry = { ...mapFoodRow(row.foods), id: row.id, servings: row.servings, meal: row.meal };
     (byDate[row.entry_date] = byDate[row.entry_date] || []).push(entry);
   });
