@@ -773,6 +773,7 @@ async function handleCallbackQuery(cq) {
           file_name: state.fileName || null,
           markers: state.extracted.markers || [],
           storage_path: path,
+          reason: state.extracted.reason || null,
         }], { returning: false });
         await clearPendingUpload(chatId);
         await sendMessage(chatId, 'Saved to your reports. You can share it anytime from the website, or send /latestreport to get it back here.');
@@ -800,6 +801,7 @@ async function handleCallbackQuery(cq) {
             clinic_name: state.visit.clinic_name || null,
             visit_notes: null,
             follow_up_date: null,
+            reason: state.visit.reason || null,
           }]);
           const visitId = inserted && inserted[0] && inserted[0].id;
           if (!visitId) throw new Error('No id returned from doctor_visits insert');
@@ -2053,7 +2055,7 @@ function formatValueUnitTG(rawValue, unit) {
 
 async function loadRecentReports(userId, limit) {
   const rows = await db.select('medical_reports', {
-    columns: 'id,patient_name,report_date,file_name,markers,storage_path,created_at',
+    columns: 'id,patient_name,report_date,file_name,markers,storage_path,reason,created_at',
     filters: ['user_id=eq.' + userId],
     order: 'created_at.desc',
     limit: limit || 10,
@@ -2068,7 +2070,7 @@ async function loadRecentReports(userId, limit) {
 // an embedded table's column through this simple select() wrapper.
 async function loadRecentPrescriptions(userId, limit) {
   const rows = await db.select('doctor_visit_files', {
-    columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty)',
+    columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty,reason)',
     filters: ['user_id=eq.' + userId, 'doc_type=eq.prescription'],
   });
   const withVisit = (rows || []).filter(r => r.doctor_visits);
@@ -2079,13 +2081,15 @@ async function loadRecentPrescriptions(userId, limit) {
 function reportLabel(r) {
   const n = (r.markers || []).length;
   const date = r.report_date || new Date(r.created_at).toLocaleDateString();
-  return `🧪 ${date} — ${n} value${n === 1 ? '' : 's'}${r.storage_path ? '' : ' (no file, values only)'}`;
+  const reasonBit = r.reason ? ` (${r.reason})` : '';
+  return `🧪 ${date}${reasonBit} — ${n} value${n === 1 ? '' : 's'}${r.storage_path ? '' : ' (no file, values only)'}`;
 }
 
 function prescriptionLabel(p) {
   const v = p.doctor_visits || {};
   const who = v.doctor_name ? `Dr. ${v.doctor_name}` : (v.specialty || 'Prescription');
-  return `💊 ${v.visit_date || ''} — ${who}`;
+  const reasonBit = v.reason ? ` (${v.reason})` : '';
+  return `💊 ${v.visit_date || ''}${reasonBit} — ${who}`;
 }
 
 // Plain-text fallback for a report with no original file attached (saved
@@ -2094,7 +2098,7 @@ function prescriptionLabel(p) {
 // instead of a file, per Aravinth's choice rather than skipping it.
 function formatMarkersAsText(report) {
   const markers = report.markers || [];
-  const header = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}`;
+  const header = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}${report.reason ? ' — ' + report.reason : ''}`;
   if (markers.length === 0) return `${header}\n\nNo values were saved on this one.`;
   const lines = markers.map(m => {
     const val = formatValueUnitTG(m.value, m.unit);
@@ -2109,7 +2113,7 @@ async function sendSavedReport(chatId, report) {
   if (report.storage_path) {
     try {
       const { buffer, contentType } = await db.storageDownload(DOCS_BUCKET, report.storage_path);
-      const caption = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}`;
+      const caption = `🧪 ${report.file_name || 'Report'}${report.report_date ? ' — ' + report.report_date : ''}${report.reason ? ' — ' + report.reason : ''}`;
       await sendTelegramFile(chatId, buffer, report.file_name || 'report', contentType, caption);
       return;
     } catch (e) {
@@ -2129,7 +2133,8 @@ async function sendVisitFile(chatId, file) {
     const { buffer, contentType } = await db.storageDownload(DOCS_BUCKET, file.storage_path);
     const v = file.doctor_visits || {};
     const who = v.doctor_name ? `Dr. ${v.doctor_name}` : (v.specialty || '');
-    const caption = `💊 ${DOC_TYPE_LABELS_TG[file.doc_type] || 'Document'}${v.visit_date ? ' — ' + v.visit_date : ''}${who ? ' (' + who + ')' : ''}`;
+    const reasonBit = v.reason ? ` — ${v.reason}` : '';
+    const caption = `💊 ${DOC_TYPE_LABELS_TG[file.doc_type] || 'Document'}${v.visit_date ? ' — ' + v.visit_date : ''}${reasonBit}${who ? ' (' + who + ')' : ''}`;
     await sendTelegramFile(chatId, buffer, file.file_name || 'prescription', contentType, caption);
   } catch (e) {
     console.error('Could not download visit file:', e.message);
@@ -2201,7 +2206,7 @@ async function handleDocumentButton(chatId, userId, data) {
   try {
     if (kind === 'report') {
       const rows = await db.select('medical_reports', {
-        columns: 'id,patient_name,report_date,file_name,markers,storage_path,created_at',
+        columns: 'id,patient_name,report_date,file_name,markers,storage_path,reason,created_at',
         filters: ['id=eq.' + encodeURIComponent(id), 'user_id=eq.' + userId],
         limit: 1,
       });
@@ -2210,7 +2215,7 @@ async function handleDocumentButton(chatId, userId, data) {
       await sendSavedReport(chatId, report);
     } else if (kind === 'presc') {
       const rows = await db.select('doctor_visit_files', {
-        columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty)',
+        columns: 'id,visit_id,storage_path,file_name,doc_type,doctor_visits(visit_date,doctor_name,specialty,reason)',
         filters: ['id=eq.' + encodeURIComponent(id), 'user_id=eq.' + userId],
         limit: 1,
       });
@@ -2234,15 +2239,18 @@ async function handleDocumentButton(chatId, userId, data) {
 // conversation instead of a form, since Telegram has no form fields.
 // State lives in telegram_links.pending_upload (jsonb), the same pattern as
 // pending_log: {type: 'report'|'visit'|'report_rejected_offer', step, ...}.
-// A report's steps are 'awaiting_file' -> 'confirm' (shows the extracted
-// summary, waits for a Save/Discard tap) -- or, if the file turns out to
-// look like a prescription/bill/note rather than a lab report, it instead
-// becomes type 'report_rejected_offer', step 'awaiting_switch_choice',
-// carrying a prefetchedFile ({fileId, mimeType, fileName} -- see
-// resolveIncomingFile) while it waits for a Yes/No tap (the uploadswitch:
-// callback below). A visit's steps are 'visit_date' -> 'doctor_name' ->
-// 'specialty' -> 'clinic_name' -> 'doc_type' -> 'awaiting_file' ->
-// 'more_files' (loops back to 'doc_type' for another file, or finishes).
+// A report's steps are 'awaiting_file' -> 'reason' (a short recall tag,
+// e.g. "Annual checkup" -- type "skip" to leave it blank) -> 'confirm'
+// (shows the extracted summary, waits for a Save/Discard tap) -- or, if the
+// file turns out to look like a prescription/bill/note rather than a lab
+// report, it instead becomes type 'report_rejected_offer', step
+// 'awaiting_switch_choice', carrying a prefetchedFile ({fileId, mimeType,
+// fileName} -- see resolveIncomingFile) while it waits for a Yes/No tap (the
+// uploadswitch: callback below). A visit's steps are 'visit_date' ->
+// 'doctor_name' -> 'specialty' -> 'clinic_name' -> 'reason' (same short
+// recall-tag idea, e.g. "Fever", "TT Injection") -> 'doc_type' ->
+// 'awaiting_file' -> 'more_files' (loops back to 'doc_type' for another
+// file, or finishes).
 // A visit state can also carry that same prefetchedFile (set once, by the
 // uploadswitch: callback below, when the person said yes to the switch) --
 // when present, the doc_type handler saves it immediately instead of
@@ -2457,13 +2465,16 @@ async function handleReportFileReceived(chatId, userId, state, message) {
   if (parsed.patientName) summary += `\nPatient: ${parsed.patientName}`;
   const body = lines.length ? `\n\n${lines.join('\n')}${more}` : '';
 
+  // Ask for a short "reason" tag before the Save/Discard confirm step (same
+  // recall-tag idea as the visit flow's new 'reason' step) -- easier to
+  // recognize a specific report later in /documents or the website list
+  // than relying on the report date alone.
   await setPendingUpload(chatId, {
-    type: 'report', step: 'confirm',
+    type: 'report', step: 'reason',
     fileId: resolved.fileId, mimeType: resolved.mimeType, fileName: resolved.fileName,
     extracted: { reportDate: parsed.reportDate || null, patientName: parsed.patientName || null, markers },
   });
-  await sendMessage(chatId, `${summary}${body}\n\nSave this to your reports?`,
-    [[{ text: '✅ Save', callback_data: 'upload:reportsave:yes' }, { text: '❌ Discard', callback_data: 'upload:reportsave:no' }]]);
+  await sendMessage(chatId, `${summary}${body}\n\nWhat was this test/report for? e.g. "Annual checkup", "Fever workup" (or type "skip")`);
 }
 
 async function askDocTypeButtons(chatId) {
@@ -2498,7 +2509,13 @@ async function handleVisitTextStep(chatId, userId, state, text) {
   }
   if (state.step === 'clinic_name') {
     const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
-    await setPendingUpload(chatId, { ...state, step: 'doc_type', visit: { ...state.visit, clinic_name: value || null } });
+    await setPendingUpload(chatId, { ...state, step: 'reason', visit: { ...state.visit, clinic_name: value || null } });
+    await sendMessage(chatId, 'What was this visit for? e.g. "Fever", "Annual checkup", "TT Injection" (or type "skip")');
+    return;
+  }
+  if (state.step === 'reason') {
+    const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
+    await setPendingUpload(chatId, { ...state, step: 'doc_type', visit: { ...state.visit, reason: value || null } });
     await askDocTypeButtons(chatId);
     return;
   }
@@ -2575,6 +2592,14 @@ async function handleUploadFlowMessage(chatId, userId, state, ctx) {
       await handleReportFileReceived(chatId, userId, state, message);
       return;
     }
+    if (state.step === 'reason') {
+      if (!text) { await sendMessage(chatId, 'What was this test/report for? A short reply is fine, or type "skip".'); return; }
+      const value = text.trim().toLowerCase() === 'skip' ? null : text.trim();
+      await setPendingUpload(chatId, { ...state, step: 'confirm', extracted: { ...state.extracted, reason: value } });
+      await sendMessage(chatId, 'Save this to your reports?',
+        [[{ text: '✅ Save', callback_data: 'upload:reportsave:yes' }, { text: '❌ Discard', callback_data: 'upload:reportsave:no' }]]);
+      return;
+    }
     await sendMessage(chatId, 'Tap "Save" or "Discard" above to continue, or /documents to cancel.');
     return;
   }
@@ -2583,7 +2608,7 @@ async function handleUploadFlowMessage(chatId, userId, state, ctx) {
     return;
   }
   if (state.type === 'visit') {
-    if (state.step === 'visit_date' || state.step === 'doctor_name' || state.step === 'specialty' || state.step === 'clinic_name') {
+    if (state.step === 'visit_date' || state.step === 'doctor_name' || state.step === 'specialty' || state.step === 'clinic_name' || state.step === 'reason') {
       await handleVisitTextStep(chatId, userId, state, text);
       return;
     }
